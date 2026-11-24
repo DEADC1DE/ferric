@@ -583,7 +583,7 @@ function mountAppShell() {
         </button>
         <div class="rss-viewport" id="rss-viewport">
           <div class="rss-ticker-track" id="rss-ticker-track">
-            <span class="rss-empty-hint">Lade RSS Feeds...</span>
+            <span class="rss-empty-hint">Loading RSS feeds...</span>
           </div>
         </div>
       </div>
@@ -4509,7 +4509,7 @@ const rssManager = {
     }
     if (this.isFetching) return;
     this.isFetching = true;
-    this.updateStatus("Lade RSS Feeds...");
+    this.updateStatus("Loading RSS feeds...");
 
     const urls = (appOptions.rssUrls || "")
       .split("\n")
@@ -4520,7 +4520,7 @@ const rssManager = {
       this.items = [];
       this.isFetching = false;
       this.render();
-      this.updateStatus("Keine gültigen URLs eingetragen.");
+      this.updateStatus("No valid URLs entered.");
       return;
     }
 
@@ -4581,13 +4581,13 @@ const rssManager = {
           }
         }
       } catch (err) {
-        console.warn("Fehler beim Laden von RSS-Feed:", url, err);
+        console.warn("Could not load RSS feed:", url, err);
       }
     }
 
     this.items = fetchedItems;
     this.isFetching = false;
-    this.updateStatus(this.items.length > 0 ? `${this.items.length} Meldungen geladen.` : "Keine Meldungen gefunden.");
+    this.updateStatus(this.items.length > 0 ? `${this.items.length} headlines loaded.` : "No headlines found.");
     this.render();
   },
 
@@ -4603,7 +4603,7 @@ const rssManager = {
     }
 
     if (!this.items || this.items.length === 0) {
-      track.innerHTML = `<span class="rss-empty-hint">${this.isFetching ? "Lade Feeds..." : "Keine Meldungen geladen."}</span>`;
+      track.innerHTML = `<span class="rss-empty-hint">${this.isFetching ? "Loading feeds..." : "No headlines loaded."}</span>`;
       return;
     }
 
@@ -6291,6 +6291,50 @@ async function initTauri() {
         },
       },
     };
+    // A fuller conversation for the demo channel: fake nicks, color codes, an action and a highlight.
+    const demoAt = (secondsAgo) => Date.now() - secondsAgo * 1000;
+    const demoLine = (id, secondsAgo, sender, text, extra = {}) => ({
+      id, sender, text, spans: [], is_notice: false, is_action: false,
+      is_encrypted: false, is_highlight: false, timestamp: demoAt(secondsAgo), ...extra,
+    });
+    const demoChannel = state.networks["net-one"].buffers["#demo"];
+    demoChannel.topic = "Ferric demo channel · fake data only · be nice";
+    demoChannel.users = {
+      ferric: { nick: "Ferric", prefix: "@" },
+      opsbot: { nick: "OpsBot", prefix: "~" },
+      morgen: { nick: "Morgenstern", prefix: "&" },
+      nightowl: { nick: "NightOwl", prefix: "%" },
+      zeta: { nick: "Zeta", prefix: "+" },
+      quasar: { nick: "Quasar", prefix: "+" },
+      kaffeekeks: { nick: "KaffeeKeks", prefix: null },
+      pixel: { nick: "Pixel", prefix: null },
+      tinsel: { nick: "Tinsel", prefix: null },
+    };
+    demoChannel.messages = [
+      demoLine(10, 1500, "*", "*** Topic set by OpsBot: Ferric demo channel · fake data only · be nice", { is_notice: true }),
+      demoLine(11, 1420, "OpsBot", "Welcome to #Demo. Logs are off, FiSH is on.", { is_notice: true }),
+      demoLine(12, 1300, "Pixel", "who is up for a quick test of the new \u000306purple\u0003 theme?"),
+      demoLine(13, 1210, "Morgenstern", "me! \u0002bold\u0002, \u001funderline\u001f and \u000308yellow\u0003 all render fine here"),
+      demoLine(14, 1100, "Tinsel", "the switchbar can be toggled in the View menu"),
+      demoLine(15, 980, "Zeta", "and the topic bar opens the channel dialog on double-click"),
+      demoLine(16, 900, "*", "*** Pixel sets mode: +o Morgenstern"),
+      demoLine(17, 800, "Quasar", "does the Server manager keep my comments in the file?"),
+      demoLine(18, 740, "Ferric", "yes, only the server lines change, everything else stays as it is"),
+      demoLine(19, 650, "KaffeeKeks", "great. the key manager handles DH1080 for queries too"),
+      demoLine(20, 560, "*", "*** NightOwl (nightowl@example.invalid) has joined #Demo"),
+      demoLine(21, 540, "*", "*** Quasar (quasar@example.invalid) has joined #Demo"),
+      demoLine(22, 520, "OpsBot", "Backup finished: 3 jobs, 0 errors", { is_notice: true }),
+      demoLine(23, 470, "NightOwl", "Morning! The new build is \u000309green\u0003 on Windows and Linux."),
+      demoLine(24, 430, "KaffeeKeks", "nice. do the \u0002FiSH\u0002 keys survive the update?", { is_encrypted: true }),
+      demoLine(25, 400, "Ferric", "yep, ECB and CBC both work. keys stay in \u001fblow.ini\u001f", { is_encrypted: true }),
+      demoLine(26, 330, "Morgenstern", "waves at everyone", { is_action: true }),
+      demoLine(27, 280, "Zeta", "anyone tried the \u000312blue\u0003 / \u000304red\u0003 / \u000307orange\u0003 nick colors yet?"),
+      demoLine(28, 230, "Quasar", "dark theme looks great. the scripts editor has line numbers too"),
+      demoLine(29, 170, "*", "*** Tinsel (tinsel@example.invalid) has joined #Demo"),
+      demoLine(30, 120, "*", "*** Zebra (zebra@example.invalid) has quit (Ping timeout: 240 seconds)"),
+      demoLine(31, 70, "Pixel", "server manager is neat, I switched two networks off with one click"),
+      demoLine(32, 20, "NightOwl", "Ferric: could you send the key again?", { is_encrypted: true, is_highlight: true }),
+    ];
     state.active_network = "net-one";
     render();
   }
