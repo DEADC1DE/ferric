@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Ferric
+GenericName=IRC Client
+Comment=Next-Gen IRC Client with FiSH encryption
+Exec=ferric-app %u
+Icon=ferric
+Terminal=false
+Categories=Network;IRCClient;Chat;
+StartupWMClass=ferric-app
+MimeType=x-scheme-handler/irc;x-scheme-handler/ircs;
+Keywords=IRC;Chat;FiSH;Client;

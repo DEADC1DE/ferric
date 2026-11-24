@@ -1,0 +1,15 @@
+; Ferric FiSH key file example.
+; Copy this file to blow.ini in the Ferric project folder, then remove the .example ending.
+; Lines that start with ";" are comments. Section names go in [square brackets].
+;
+; The [FiSH] section is a header only. Do not add a key line to it.
+[FiSH]
+process_incoming=1
+process_outgoing=1
+
+; One example channel section. The key below is used for messages in #example.
+; Use [Network:#channel] instead to limit a key to one network.
+; Ferric stores the key encrypted when it is saved through the app.
+; The value below is a plain placeholder. Replace it with your own key.
+[#example]
+key=replace-with-your-key

@@ -1,0 +1,27 @@
+; Ferric server list example.
+; Copy this file to Scripts\connectd.mrc in the Ferric project folder, then remove the .example ending.
+; Only lines that start with "server -m " are read. Other lines, like this comment, are ignored.
+; Put each comment on its own line. Do not put a comment at the end of a server line.
+;
+; Format of one server line:
+;   server -m HOST:PORT [PASSWORD] -i NICK ALTNICK USERNAME@
+;   server -m   keep these exact words at the start of the line
+;   HOST        the server address, for example irc.example.org
+;   PORT        6667 for a plain connection, or +6697 (with a plus sign) for a TLS connection
+;   PASSWORD    optional. Leave it out if the server needs no password
+;   NICK        your nickname
+;   ALTNICK     a second nickname. The format needs it. Ferric does not use it when USERNAME@ is present
+;   USERNAME@   the name before the @ is your username. Keep the @ at the end
+;
+; TLS encrypts the connection, but Ferric does not check the server certificate yet.
+; See the Security section of the README.
+
+; Example 1: plain connection on the common port 6667, no password.
+server -m irc.example.org:6667 -i your-nick your-alt your-ident@
+
+; Example 2: TLS connection on the common port 6697, with a password placeholder.
+; Replace your-password-here with the real password, or remove that word.
+server -m irc2.example.org:+6697 your-password-here -i your-nick your-alt your-ident@
+
+; Example 3: a second TLS server, no password.
+server -m secure.example.org:+6697 -i your-nick your-alt your-ident@
