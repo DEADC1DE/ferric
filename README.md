@@ -10,7 +10,7 @@ It reads your server list from `connectd.mrc`, keeps FiSH keys in `blow.ini`, an
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-blue)
 ![Status](https://img.shields.io/badge/status-early%20development-yellow)
 
-[Features](#features) · [Quick start](#quick-start) · [How it fits together](#how-it-fits-together) · [Configuration](#configuration) · [Security](#security) · [Status](#project-status) · [Repository index](index.md)
+[Features](#features) · [Quick start](#quick-start) · [How it fits together](#how-it-fits-together) · [Configuration](#configuration) · [Security](#security) · [Status](#project-status) · [License](#license) · [Repository index](index.md)
 
 </div>
 
@@ -21,22 +21,24 @@ It reads your server list from `connectd.mrc`, keeps FiSH keys in `blow.ini`, an
 - **Bring your existing setup.** Server entries come from `connectd.mrc`, FiSH keys from `blow.ini`. No import step.
 - **FiSH built in.** Messages to a target with a stored key are encrypted; incoming FiSH messages are decrypted.
 - **Classic look and habits.** Right-click menus, nick colors by channel mode, an Options dialog with a category tree, and the Alt+O and Alt+R shortcuts.
-- **Native core.** Connections, IRC parsing, FiSH, and config file handling are plain Rust in the `ferric-core` crate.
+- **Scripts.** Load `.mrc` script files (a subset of the classic script language) or `.py` Python scripts.
+- **Native core.** Connections, IRC parsing, TLS, FiSH, and config file handling are plain Rust in the `ferric-core` crate.
 
 ## Features
 
 | Area | What you get |
 |---|---|
 | **IRC** | Multiple networks, channels, private conversations, nick lists, unread counts, and highlights. IRC color and formatting codes are rendered. |
-| **TLS** | Servers with self-signed certificates can be allowed in Options. The certificate is trusted on the first connect and its fingerprint is stored. Later connects are refused if the certificate changed. See [Security](#security). |
-| **FiSH** | ECB by default. A key stored with the `cbc:` prefix sends in CBC. Incoming CBC messages are recognized by their `+OK *` or `mcps *` prefix, independent of the key. Key exchange via DH1080 for private queries. Manage keys in **Tools → FiSH key manager** or with `/fish`, `/keys`, and `/delkey`. |
+| **TLS** | Options → Connect: **Allow self-signed certificates** (on by default) and **Reject invalid certificates** (off by default; it also refuses self-signed ones). A self-signed certificate is trusted on the first connect and its fingerprint is stored. Later connects are refused if the certificate changed. See [Security](#security). |
+| **FiSH** | ECB by default. A key stored with the `cbc:` prefix sends in CBC. Incoming CBC messages are recognized by their `+OK *` or `mcps *` prefix, independent of the key. Key exchange via DH1080 for private queries. Manage keys in **Tools → FiSH key manager…** or with `/fish`, `/keys`, and `/delkey`. |
 | **Context menus** | Right-click menus for the sidebar, the status window, channels, queries, the nick list, chat senders, and the menu bar. |
 | **Nick colors** | Nick list and chat names follow the channel mode (`~`, `&`, `@`, `%`, `+`), first match wins. |
 | **Queries** | Double-click a nick or use `/query <nick> [message]` to open a private conversation. `/close` or the close button ends it. |
-| **Options** | **Alt+O** opens the Options dialog with a category tree: Display (themes, nick list, switchbar), Mouse (double-click actions), Logging (session chat logs), Identd (built-in RFC 1413 daemon), and Proxy (SOCKS5 and HTTP CONNECT). |
-| **Scripts Editor** | **Alt+R** opens an editor for `.mrc` files in the `Scripts` folder. Line numbers, backup on save, and external conflict detection. Scripts you load are loaded again at the next start (listed in `loaded-scripts.txt` next to `connectd.mrc`). The interpreter runs a subset of aliases and events; not every command is supported. |
+| **Options** | **Alt+O** opens the Options dialog with a category tree, among them Display, Mouse, Logging, Identd, and Proxy. The Proxy page supports SOCKS4, SOCKS5, and HTTP CONNECT. |
+| **Scripts Editor** | **Alt+R** opens an editor for `.mrc` and `.py` files in the `Scripts` folder, with line numbers, backup on save, and external conflict detection. Scripts you load are loaded again at the next start (listed in `loaded-scripts.txt` next to `connectd.mrc`). The `.mrc` interpreter runs a subset of aliases and events; not every command is supported. |
+| **Python scripts** | `.py` scripts run in a Python runtime. Ferric uses a `python` folder next to `ferric-app.exe` if it exists, otherwise the Python found on your `PATH`. |
 | **Server manager** | **Tools → Server manager…** lists the `server` lines of `connectd.mrc`. Add, edit, enable, disable, or delete servers; comments and other lines stay as they are. A save is refused when the file changed on disk. |
-| **Interface** | Light and dark themes, per-area fonts (**View → Font...**), an optional nick list, a Switchbar toggle, and a notes window (**View → Notes**). |
+| **Interface** | Light and dark themes, per-area fonts (**View → Font…**), an optional nick list, a Switchbar toggle, and a notes window. |
 
 <details>
 <summary><b>Commands</b></summary>
@@ -49,8 +51,8 @@ It reads your server list from `connectd.mrc`, keeps FiSH keys in `blow.ini`, an
 | `/close [target]` | Close the given or the active window. |
 | `/clear` | Clear the active window. |
 | `/raw line` | Send a raw IRC line. |
-| `/scriptload file.mrc` | Load aliases from a file in the `Scripts` folder for this session. Invoke a loaded alias with `/name arguments`. Requires an active network and buffer. |
-| `/scriptunload file.mrc` | Unload aliases loaded from that file in this session. |
+| `/scriptload file` | Load a `.mrc` or `.py` file from the `Scripts` folder for this session. Invoke a loaded `.mrc` alias with `/name arguments`. Requires an active network and buffer. |
+| `/scriptunload file` | Unload a script loaded from that file in this session. |
 | `/connectd` (`/load`) | Reload server entries from `connectd.mrc`. |
 | `/fish [target] key` (`/key`, `/keys`, `/blowfish`) | Store a FiSH key in `blow.ini`. Without arguments, opens the key manager. |
 | `/delkey [target]` | Delete a FiSH key from `blow.ini`. |
@@ -133,10 +135,10 @@ cargo test -p ferric-core
 
 ```mermaid
 flowchart LR
-    subgraph files["Config files"]
+    subgraph files["Config and script files"]
         blow["blow.ini<br/>FiSH keys"]
         conn["Scripts/connectd.mrc<br/>server entries"]
-        mrc["Scripts/*.mrc<br/>scripts"]
+        scripts["Scripts/*.mrc, *.py<br/>scripts"]
     end
     ui["ui/<br/>JavaScript + Vite"]
     app["ferric-app<br/>Tauri 2 shell"]
@@ -148,14 +150,14 @@ flowchart LR
     app -->|resolve paths| files
     core -->|read and write| blow
     core -->|read and write| conn
-    core -->|Scripts Editor| mrc
+    core -->|Scripts Editor| scripts
     core <-->|TCP or TLS| net
 ```
 
 | Part | Role |
 |---|---|
 | `crates/ferric-core` | Connections, IRC protocol and formatting, TLS, FiSH, `blow.ini` and `connectd.mrc` parsing, script files. No Tauri dependency. |
-| `crates/ferric-app` | The Tauri 2 desktop shell: finds the config files and exposes the core to the UI. |
+| `crates/ferric-app` | The Tauri 2 desktop shell: finds the config files, runs the Python scripts, and exposes the core to the UI. |
 | `ui/` | The JavaScript interface, built with Vite. |
 
 ---
@@ -177,7 +179,7 @@ Both files are looked up in the same places, in this order, and the first match 
 
 Ferric never searches the working directory or parent folders. A missing `connectd.mrc` is created in `Scripts\` of the project folder on the first save; a missing `blow.ini` is created there on the first saved FiSH key.
 
-Next to `connectd.mrc` Ferric keeps two small files: `ferric-servers.txt` (server order and network names) and `ferric-tls-pins.txt` (pinned certificate fingerprints).
+Next to `connectd.mrc` Ferric keeps three small files: `ferric-servers.txt` (server order and network names), `ferric-tls-pins.txt` (pinned certificate fingerprints), and `loaded-scripts.txt` (scripts to load at start).
 
 > [!IMPORTANT]
 > These files can hold passwords and keys. Keep them out of the repository and never share them.
@@ -195,10 +197,10 @@ Then edit the copies with your own servers and keys.
 
 ## Security
 
-- **Certificates.** Normal TLS checks apply. For a server with a self-signed certificate, enable **Allow self-signed certificates** in Options. Ferric then trusts that certificate on the first connect and stores its fingerprint in `ferric-tls-pins.txt`. If the certificate changes later, the connect is refused until you remove the old pin.
+- **Certificates.** With **Allow self-signed certificates** on, a self-signed certificate is trusted on the first connect and its fingerprint is stored in `ferric-tls-pins.txt`. If that certificate changes later, the connect is refused until you remove the old pin. With **Reject invalid certificates** on, self-signed certificates are refused.
 - **Only keyed targets are encrypted.** A message is encrypted only when a FiSH key is stored for its target; everything else is plain IRC text.
 - **A failed encryption sends nothing.** If FiSH encryption fails, Ferric reports `FiSH encryption failed; message was not sent`.
-- **Your files stay private.** `blow.ini`, `connectd.mrc` and `ferric-tls-pins.txt` are local to your machine; see [Configuration](#configuration).
+- **Your files stay private.** `blow.ini`, `connectd.mrc`, and `ferric-tls-pins.txt` are local to your machine; see [Configuration](#configuration).
 
 ---
 
@@ -206,9 +208,13 @@ Then edit the copies with your own servers and keys.
 
 **Early development.** Features and behavior may change.
 
-- The Windows release build via `build-exe.ps1` and the Linux build via `build-linux.sh` are available.
+- The Windows build via `build-exe.ps1` and the Linux build via `build-linux.sh` are available.
 - Display, Mouse, Logging, Identd, and Proxy pages in Options are functional.
-- The script interpreter covers a subset of the classic script language; see the Scripts Editor row in [Features](#features).
+- The `.mrc` interpreter covers a subset of the classic script language; see the Scripts Editor row in [Features](#features).
+
+## License
+
+Ferric is released under the [MIT License](LICENSE).
 
 Repository navigation is summarized in [index.md](index.md).
 
@@ -218,6 +224,7 @@ Repository navigation is summarized in [index.md](index.md).
   - `ferric-app/` — Tauri application shell and platform integration.
   - `ferric-core/` — IRC protocol, TLS, file parsing, and FiSH implementation.
 - `ui/` — Vite and JavaScript interface.
-- `Scripts/` — script files that Ferric can load; the server list `connectd.mrc` is created here.
+- `Scripts/` — example scripts; the server list `connectd.mrc` is created here.
 - `examples/` — templates for the local configuration files.
 - [`index.md`](index.md) — repository entry point.
+- [`LICENSE`](LICENSE) — MIT license.
