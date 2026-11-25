@@ -1195,13 +1195,23 @@ export function matchNickColor(user, ownNick = "") {
 
   for (const rule of state.colors.rules) {
     if (rule.pattern === "$me" || rule.id === "me" || rule.label === "$me") {
-      if (isMe) return rule.color;
+      if (isMe) {
+        // Default $me (#ffffff) should not override channel mode colors or break light-theme contrast.
+        if (rule.isDefault && String(rule.color || "").toLowerCase() === "#ffffff") {
+          if (prefix) continue;
+          return null;
+        }
+        return rule.color;
+      }
       continue;
     }
     // Check mode
     if (rule.mode) {
       if (rule.mode === "none" || rule.mode === "No mode") {
         if (prefix) continue; // has a mode
+        if (rule.isDefault && String(rule.color || "").toLowerCase() === "#ffffff") {
+          return null;
+        }
       } else {
         let match = false;
         for (const ch of rule.mode) {

@@ -43,6 +43,7 @@ const scriptEditor = createScriptEditor({
   },
 });
 const THEME_STORAGE_KEY = "ferric-theme";
+const UI_STYLE_STORAGE_KEY = "ferric-ui-style";
 
 function readThemePreference() {
   try {
@@ -50,6 +51,14 @@ function readThemePreference() {
     if (saved === "dark" || saved === "light") return saved;
   } catch { }
   return "dark";
+}
+
+function readUiStylePreference() {
+  try {
+    const saved = localStorage.getItem(UI_STYLE_STORAGE_KEY);
+    if (saved === "fluent" || saved === "classic") return saved;
+  } catch { }
+  return "fluent";
 }
 
 const SWITCHBAR_STORAGE_KEY = "ferric-switchbar";
@@ -372,6 +381,9 @@ function systemThemeName() {
 let activeTheme = followSystemTheme ? systemThemeName() : readThemePreference();
 document.documentElement.dataset.theme = activeTheme;
 
+let activeUiStyle = readUiStylePreference();
+document.documentElement.dataset.style = activeUiStyle;
+
 function applyTheme(theme, persist = true) {
   activeTheme = theme === "dark" ? "dark" : "light";
   document.documentElement.dataset.theme = activeTheme;
@@ -380,6 +392,18 @@ function applyTheme(theme, persist = true) {
       localStorage.setItem(THEME_STORAGE_KEY, activeTheme);
     } catch { }
   }
+  syncViewMenu();
+}
+
+function applyUiStyle(style, persist = true) {
+  activeUiStyle = style === "classic" ? "classic" : "fluent";
+  document.documentElement.dataset.style = activeUiStyle;
+  if (persist) {
+    try {
+      localStorage.setItem(UI_STYLE_STORAGE_KEY, activeUiStyle);
+    } catch { }
+  }
+  syncViewMenu();
 }
 
 function syncDarkModeCheckbox() {
@@ -538,6 +562,7 @@ function mountAppShell() {
           <button type="button" role="menuitem" data-menu-action="open-font">Font…</button>
           <button type="button" role="menuitem" class="has-key" data-menu-action="open-colors"><span>Colors…</span><kbd class="menu-key">Alt+K</kbd></button>
           <button type="button" role="menuitem" class="has-key" data-menu-action="open-abook"><span>Address Book…</span><kbd class="menu-key">Alt+B</kbd></button>
+          <button type="button" role="menuitem" data-menu-action="open-themes">Themes…</button>
           <div class="menu-separator" role="separator"></div>
           <button type="button" role="menuitemcheckbox" aria-checked="false" data-menu-action="toggle-fullscreen">Full Screen</button>
           <button type="button" role="menuitemcheckbox" aria-checked="false" data-menu-action="toggle-ontop">On Top</button>
@@ -997,6 +1022,17 @@ function attachStaticHandlers() {
     });
   });
 
+  // Once a menu is open, hovering another top-level menu switches to it immediately.
+  document.querySelectorAll(".app-menu-bar .menu-dropdown").forEach((menu) => {
+    menu.addEventListener("pointerenter", () => {
+      const openMenu = document.querySelector(".app-menu-bar .menu-dropdown[open]");
+      if (openMenu && openMenu !== menu) {
+        openMenu.open = false;
+        menu.open = true;
+      }
+    });
+  });
+
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
       document.querySelectorAll(".menu-dropdown[open]").forEach((menu) => { menu.open = false; });
@@ -1100,6 +1136,9 @@ function attachStaticHandlers() {
           break;
         case "open-abook":
           openAddressBookModal();
+          break;
+        case "open-themes":
+          openOptionsModal("themes");
           break;
         case "toggle-fullscreen":
           if (!state.compact) void setWindowFlag("set_fullscreen", "fullscreen");
@@ -4926,6 +4965,7 @@ const OPTIONS_TREE = [
       { id: "display-rss", label: "RSS Feeds" },
     ]
   },
+  { id: "themes", label: "Themes" },
 ];
 
 function optionsPageLabel(id) {
@@ -5293,6 +5333,33 @@ function renderOptionsPage() {
         <label class="options-toggle"><input type="checkbox" data-opt="floodQueueOwn" ${p.floodQueueOwn ? "checked" : ""} /> Queue Own messages</label>
       </div>`;
   }
+  if (state.optionsPage === "themes") {
+    const presets = [
+      { id: "fluent-dark", style: "fluent", theme: "dark", title: "Fluent Dark", sub: "Modern layered dark", bg: "linear-gradient(135deg, #1c1f24 55%, #0078d4 55%)" },
+      { id: "fluent-light", style: "fluent", theme: "light", title: "Fluent Light", sub: "Modern layered light", bg: "linear-gradient(135deg, #f3f5f8 55%, #0067c0 55%)" },
+      { id: "classic-dark", style: "classic", theme: "dark", title: "Classic Dark", sub: "Traditional IRC dark", bg: "linear-gradient(135deg, #000000 55%, #1f78d1 55%)" },
+      { id: "classic-light", style: "classic", theme: "light", title: "Classic Light", sub: "Traditional IRC light", bg: "linear-gradient(135deg, #ffffff 55%, #35689d 55%)" },
+    ];
+    return `
+      <h3>Themes</h3>
+      <fieldset class="options-section">
+        <legend>Theme Switcher</legend>
+        <div class="theme-switcher-grid">
+          ${presets.map((t) => {
+            const active = activeUiStyle === t.style && activeTheme === t.theme;
+            return `
+              <button type="button" class="theme-card${active ? " is-active" : ""}" data-theme-style="${t.style}" data-theme-mode="${t.theme}">
+                <span class="theme-swatch" style="background: ${t.bg};"></span>
+                <span>
+                  <div class="theme-card-title">${t.title}</div>
+                  <div class="theme-card-sub">${t.sub}</div>
+                </span>
+              </button>`;
+          }).join("")}
+        </div>
+        <label class="options-toggle"><input id="options-themes-follow-system" type="checkbox" ${followSystemTheme ? "checked" : ""} /> Follow system dark mode</label>
+      </fieldset>`;
+  }
   if (state.optionsPage === "display" || state.optionsPage === "display-options") {
     return `
       <h3>Display</h3>
@@ -5388,11 +5455,13 @@ function renderOptionsPage() {
   return `<h3>${escapeHtml(optionsPageLabel(state.optionsPage))}</h3><p class="options-page-empty">Not available in Ferric yet.</p>`;
 }
 
-function openOptionsModal() {
+function openOptionsModal(initialPage = null) {
   if (isServerManagerOpen()) closeServerManager();
   pendingOptions = { ...appOptions };
   optionsSubdialog = null;
-  if (!state.optionsPage) {
+  if (initialPage) {
+    state.optionsPage = initialPage;
+  } else if (!state.optionsPage) {
     state.optionsPage = "connect-options";
   }
   dismissSlotDialogs();
@@ -5655,7 +5724,26 @@ function renderOptionsModal() {
     });
   }
 
-  // Display page hooks
+  // Themes & Display page hooks
+  container.querySelectorAll("[data-theme-style]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const style = btn.dataset.themeStyle;
+      const mode = btn.dataset.themeMode;
+      if (followSystemTheme) {
+        followSystemTheme = false;
+        try { localStorage.setItem(FOLLOW_SYSTEM_THEME_STORAGE_KEY, "off"); } catch { }
+      }
+      applyUiStyle(style);
+      applyTheme(mode);
+      renderOptionsModal();
+    });
+  });
+  document.getElementById("options-themes-follow-system")?.addEventListener("change", (event) => {
+    followSystemTheme = event.target.checked;
+    try { localStorage.setItem(FOLLOW_SYSTEM_THEME_STORAGE_KEY, followSystemTheme ? "on" : "off"); } catch { }
+    applyTheme(followSystemTheme ? systemThemeName() : readThemePreference(), false);
+    renderOptionsModal();
+  });
   container.querySelector("#btn-open-colors-modal")?.addEventListener("click", () => {
     closeOptionsModal();
     openColorsModal();
