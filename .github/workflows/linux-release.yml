@@ -50,12 +50,13 @@ jobs:
 
       - name: Package
         run: |
-          mkdir ferric-linux
-          cp target/release/ferric-app ferric-linux/
-          cp README.md LICENSE ferric-linux/
-          tar -czf Ferric-${{ steps.tag.outputs.name }}-linux-x64.tar.gz -C ferric-linux .
+          dir="Ferric-${{ steps.tag.outputs.name }}-linux-x64"
+          mkdir "$dir"
+          cp target/release/ferric-app README.md LICENSE "$dir/"
+          cp -r Scripts examples "$dir/"
+          tar -czf "$dir.tar.gz" "$dir"
 
       - name: Attach to the release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ steps.tag.outputs.name }}" Ferric-${{ steps.tag.outputs.name }}-linux-x64.tar.gz --clobber
+        run: gh release upload "${{ steps.tag.outputs.name }}" "Ferric-${{ steps.tag.outputs.name }}-linux-x64.tar.gz" --clobber
