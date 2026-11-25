@@ -43,6 +43,75 @@ pub fn decode_lossy(bytes: &[u8]) -> String {
     out
 }
 
+/// Converts ANSI SGR colour sequences (`ESC[...m`) into IRC colour and format codes, as the
+/// bots' output uses them: `0` resets, `1` is bold, `91`/`92`/`93` are red, green and yellow.
+/// Any other escape sequence is removed, so no raw control characters reach the chat.
+pub fn ansi_to_irc(text: &str) -> String {
+    // mIRC colour numbers for ANSI 30-37 (normal) and 90-97 (bright), in ANSI order.
+    const NORMAL: [u8; 8] = [1, 5, 3, 7, 2, 6, 10, 0];
+    const BRIGHT: [u8; 8] = [14, 4, 9, 8, 12, 13, 11, 15];
+
+    let mut out = String::with_capacity(text.len());
+    let mut fg: Option<u8> = None;
+    let mut bg: Option<u8> = None;
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\u{1b}' {
+            out.push(c);
+            continue;
+        }
+        if chars.peek() != Some(&'[') {
+            continue; // a lone ESC carries no text; the character after it stays
+        }
+        chars.next();
+        let mut params = String::new();
+        let mut final_byte = None;
+        for p in chars.by_ref() {
+            if ('@'..='~').contains(&p) {
+                final_byte = Some(p);
+                break;
+            }
+            params.push(p);
+        }
+        if final_byte != Some('m') {
+            continue;
+        }
+        let mut colour_changed = false;
+        for param in params.split(';') {
+            let code: u8 = match param.parse() {
+                Ok(n) => n,
+                Err(_) if param.is_empty() => 0,
+                Err(_) => continue,
+            };
+            match code {
+                0 => {
+                    out.push('\u{0f}');
+                    fg = None;
+                    bg = None;
+                }
+                1 => out.push('\u{02}'),
+                3 => out.push('\u{1d}'),
+                4 => out.push('\u{1f}'),
+                30..=37 => { fg = Some(NORMAL[(code - 30) as usize]); colour_changed = true; }
+                90..=97 => { fg = Some(BRIGHT[(code - 90) as usize]); colour_changed = true; }
+                39 => { fg = None; colour_changed = true; }
+                40..=47 => { bg = Some(NORMAL[(code - 40) as usize]); colour_changed = true; }
+                100..=107 => { bg = Some(BRIGHT[(code - 100) as usize]); colour_changed = true; }
+                49 => { bg = None; colour_changed = true; }
+                _ => {}
+            }
+        }
+        if colour_changed {
+            match (fg, bg) {
+                (None, None) => out.push('\u{03}'),
+                (f, None) => out.push_str(&format!("\u{03}{:02}", f.unwrap_or(99))),
+                (f, Some(b)) => out.push_str(&format!("\u{03}{:02},{:02}", f.unwrap_or(99), b)),
+            }
+        }
+    }
+    out
+}
+
 /// Splits `text` into pieces of at most `max_bytes` bytes, cutting only at char boundaries and
 /// preferring the last space in the window (that space is dropped). Never returns empty pieces.
 pub fn split_text(text: &str, max_bytes: usize) -> Vec<String> {
@@ -108,6 +177,31 @@ mod tests {
     fn decode_falls_back_to_windows_1252() {
         assert_eq!(decode_lossy("h\u{e9}llo".as_bytes()), "h\u{e9}llo");
         assert_eq!(decode_lossy(&[b'h', 0xE9, 0x80]), "h\u{e9}\u{20AC}");
+    }
+
+    #[test]
+    fn ansi_colours_become_irc_codes() {
+        // The stats bot's crown: yellow ♔, then reset.
+        assert_eq!(ansi_to_irc("ago\u{1b}[93m\u{2654}\u{1b}[0m)"), "ago\u{3}08\u{2654}\u{f})");
+        assert_eq!(ansi_to_irc("\u{1b}[92m▲\u{1b}[0m 1"), "\u{3}09▲\u{f} 1");
+        assert_eq!(ansi_to_irc("\u{1b}[1;91mX"), "\u{2}\u{3}04X");
+    }
+
+    #[test]
+    fn ansi_all_colours_and_backgrounds() {
+        assert_eq!(ansi_to_irc("\u{1b}[31mR"), "\u{3}05R");
+        assert_eq!(ansi_to_irc("\u{1b}[30mK"), "\u{3}01K");
+        assert_eq!(ansi_to_irc("\u{1b}[97mW"), "\u{3}15W");
+        assert_eq!(ansi_to_irc("\u{1b}[31;44mZ"), "\u{3}05,02Z");
+        assert_eq!(ansi_to_irc("\u{1b}[41mQ"), "\u{3}99,05Q");
+        assert_eq!(ansi_to_irc("\u{1b}[39mD"), "\u{3}D");
+    }
+
+    #[test]
+    fn ansi_unknown_sequences_are_removed() {
+        assert_eq!(ansi_to_irc("a\u{1b}[2Kb"), "ab");
+        assert_eq!(ansi_to_irc("a\u{1b}c"), "ac");
+        assert_eq!(ansi_to_irc("plain"), "plain");
     }
 
     #[test]

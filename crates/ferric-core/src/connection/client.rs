@@ -21,7 +21,7 @@ fn address_of(p: &IrcPrefix) -> Option<String> {
     }
 }
 use crate::proxy::{self, ProxyConfig};
-use crate::text::{decode_lossy, is_channel_name_with, split_text};
+use crate::text::{ansi_to_irc, decode_lossy, is_channel_name_with, split_text};
 
 /// Checks a server by its certificate fingerprint instead of the CA roots. With `pin`
 /// set, only that certificate passes. The handshake signatures are checked either way.
@@ -942,7 +942,7 @@ where
     while matches!(buf.last(), Some(b'\n' | b'\r')) {
         buf.pop();
     }
-    Ok(Some(decode_lossy(buf)))
+    Ok(Some(ansi_to_irc(&decode_lossy(buf))))
 }
 
 impl Drop for IrcClient {
@@ -1328,7 +1328,8 @@ async fn run_client_loops<R, W>(
                             if let Some(k) = key_opt {
                                 let cipher = FishCipher::new(k);
                                 if let Ok(dec) = cipher.decrypt(trimmed_wire) {
-                                    display_text = dec;
+                                    // Decrypted text can carry ANSI colours too (bots send them under FiSH).
+                                    display_text = ansi_to_irc(&dec);
                                     is_encrypted = true;
                                 }
                             }
@@ -1826,6 +1827,16 @@ mod tests {
         assert_eq!(read_line_capped(&mut reader, &mut buf).await.unwrap().unwrap(), "caf\u{e9}");
         assert_eq!(read_line_capped(&mut reader, &mut buf).await.unwrap().unwrap(), "last");
         assert!(read_line_capped(&mut reader, &mut buf).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn read_line_converts_ansi_colours() {
+        let data = b"PRIVMSG #x :ago\x1b[93m\xE2\x99\x94\x1b[0m)\r\n".to_vec();
+        let mut reader = tokio::io::BufReader::new(&data[..]);
+        let mut buf = Vec::new();
+        let line = read_line_capped(&mut reader, &mut buf).await.unwrap().unwrap();
+        assert!(!line.contains('\u{1b}'), "raw ESC left in: {line:?}");
+        assert!(line.contains("\u{3}08\u{2654}"), "crown not converted: {line:?}");
     }
 
     fn payload<'a>(line: &'a str, target: &str) -> &'a str {

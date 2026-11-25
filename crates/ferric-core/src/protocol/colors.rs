@@ -209,3 +209,17 @@ mod tests {
         assert_eq!(text, "x".repeat(200));
     }
 }
+
+#[cfg(test)]
+mod ansi_chain_tests {
+    use super::*;
+
+    #[test]
+    fn converted_crown_line_has_yellow_crown_span() {
+        let raw = crate::text::ansi_to_irc("ago\u{1b}[93m\u{2654}\u{1b}[0m)");
+        let spans = parse_irc_formatting(&raw);
+        let crown = spans.iter().find(|s| s.text.contains('\u{2654}')).expect("crown span");
+        assert_eq!(crown.fg, Some(8));
+        assert!(spans.iter().all(|s| !s.text.contains('\u{1b}')));
+    }
+}
