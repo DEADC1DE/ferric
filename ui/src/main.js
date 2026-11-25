@@ -642,7 +642,7 @@ function mountAppShell() {
         </header>
 
         <div id="messages-log" class="messages-log" aria-live="polite">
-          <div class="empty-state">No buffer selected</div>
+          <div class="empty-state">No server connected</div>
         </div>
 
         <footer class="input-area">
@@ -2276,9 +2276,12 @@ function updateMessages(activeBuf, wasAtBottom = true) {
   if (!log) return false;
 
   if (!activeBuf || !activeBuf.messages) {
-    if (rendered.log !== "empty") {
-      log.innerHTML = '<div class="empty-state">No buffer selected</div>';
-      rendered.log = "empty";
+    const hasNetworks = state.networks && Object.keys(state.networks).length > 0;
+    const emptyMsg = hasNetworks ? "No buffer selected" : "No server connected";
+    const emptyKey = `empty:${emptyMsg}`;
+    if (rendered.log !== emptyKey) {
+      log.innerHTML = `<div class="empty-state">${emptyMsg}</div>`;
+      rendered.log = emptyKey;
     }
     return false;
   }
