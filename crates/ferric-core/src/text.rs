@@ -30,12 +30,17 @@ pub fn strip_status_prefix<'a>(target: &'a str, chantypes: Option<&str>) -> &'a 
     }
 }
 
-/// Decodes bytes as UTF-8, falling back to Windows-1252 when they are not valid UTF-8.
+/// Decodes bytes as UTF-8. Only the byte runs that are not valid UTF-8 are decoded as
+/// Windows-1252, so one stray byte does not garble the valid UTF-8 characters around it.
 pub fn decode_lossy(bytes: &[u8]) -> String {
-    match std::str::from_utf8(bytes) {
-        Ok(text) => text.to_string(),
-        Err(_) => crate::script_files::decode_windows_1252(bytes),
+    let mut out = String::with_capacity(bytes.len());
+    for chunk in bytes.utf8_chunks() {
+        out.push_str(chunk.valid());
+        if !chunk.invalid().is_empty() {
+            out.push_str(&crate::script_files::decode_windows_1252(chunk.invalid()));
+        }
     }
+    out
 }
 
 /// Splits `text` into pieces of at most `max_bytes` bytes, cutting only at char boundaries and
@@ -103,6 +108,14 @@ mod tests {
     fn decode_falls_back_to_windows_1252() {
         assert_eq!(decode_lossy("h\u{e9}llo".as_bytes()), "h\u{e9}llo");
         assert_eq!(decode_lossy(&[b'h', 0xE9, 0x80]), "h\u{e9}\u{20AC}");
+    }
+
+    #[test]
+    fn decode_keeps_utf8_next_to_a_stray_byte() {
+        // U+2654 WHITE CHESS KING (E2 99 94) next to a lone Windows-1252 byte (0xE9).
+        let bytes = [b'a', 0xE2, 0x99, 0x94, b' ', 0xE9];
+        assert_eq!(decode_lossy(&bytes), "a\u{2654} \u{e9}");
+        assert_eq!(decode_lossy("\u{2654}".as_bytes()), "\u{2654}");
     }
 
     #[test]
