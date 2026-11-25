@@ -665,6 +665,12 @@ summary:focus-visible,
   color: var(--sel-bg);
 }
 
+/* The network's status window is selected: the network entry is highlighted like a selected channel. */
+.network-header.is-status-active .network-name {
+  color: var(--sel-fg);
+  background: var(--sel-bg);
+}
+
 :root:not([data-theme="dark"]) .network-header.is-current .network-name {
   color: var(--text);
   text-decoration: underline;
@@ -806,9 +812,27 @@ summary:focus-visible,
   --attn-normal: var(--tree-highlight);
 }
 
+/* Query with unread activity: bold name and a fixed marker, so it stays visible until opened. */
+.channel-item.is-attention .chan-name {
+  font-weight: 700;
+}
+
+.channel-item.is-attention .chan-name::before {
+  content: "\25CF\00A0";
+}
+
+.switchbar-tab.is-attention {
+  font-weight: 700;
+}
+
+.switchbar-tab.is-attention::before {
+  content: "\25CF\00A0";
+}
+
+/* Blinks until the query is opened: the text colour and a background flash alternate. */
 @keyframes attention-pulse {
-  0%, 100% { color: var(--attn-normal); }
-  50% { color: var(--accent); }
+  0%, 100% { color: var(--attn-normal); background-color: transparent; }
+  50% { color: var(--accent); background-color: color-mix(in srgb, var(--accent) 35%, transparent); }
 }
 
 .channel-item.active .chan-label {
@@ -3072,10 +3096,10 @@ input[type="checkbox"] {
     animation-iteration-count: 1 !important;
   }
 
+  /* A query with unread messages keeps blinking until it is opened, even when Windows animation effects are off. */
   .channel-item.is-attention,
   .switchbar-tab.is-attention {
-    animation: none;
-    color: var(--accent);
+    animation: attention-pulse 1.2s ease-in-out infinite !important;
   }
 
   /* The scrolling ticker is an explicit choice in the options, so it keeps running. */

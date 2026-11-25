@@ -642,6 +642,34 @@ on *:TEXT:*:#:{ echo no }");
     }
 
     #[test]
+    fn start_connectfail_and_appactive_handlers_run() {
+        let mut rt = Runtime::new();
+        rt.load(
+            "e.mrc",
+            "on *:START:{ echo started }\non *:CONNECTFAIL:{ echo failed $1- }\non *:APPACTIVE:{ echo focus $network }\n",
+        );
+        let texts_of = |res: RunResult| -> Vec<String> { res.effects.iter().map(|e| e.text().to_string()).collect() };
+        let start = ScriptEvent::Lifecycle { event: "start", network: None, me: None, text: String::new() };
+        assert_eq!(texts_of(rt.dispatch_event(&start, None)), ["started"]);
+        let fail = ScriptEvent::Lifecycle {
+            event: "connectfail",
+            network: Some("net".into()),
+            me: Some("me".into()),
+            text: "Connection refused".into(),
+        };
+        assert_eq!(texts_of(rt.dispatch_event(&fail, None)), ["failed Connection refused"]);
+        let active = ScriptEvent::Lifecycle {
+            event: "appactive",
+            network: Some("net".into()),
+            me: Some("me".into()),
+            text: String::new(),
+        };
+        assert_eq!(texts_of(rt.dispatch_event(&active, None)), ["focus net"]);
+        // A handler for another event does not run for this one.
+        assert!(rt.dispatch_event(&start, None).effects.iter().all(|e| e.text() != "failed"));
+    }
+
+    #[test]
     fn kick_and_op_handlers_see_their_nicks() {
         let mut rt = Runtime::new();
         rt.load(

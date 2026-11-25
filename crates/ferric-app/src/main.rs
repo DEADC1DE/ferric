@@ -22,7 +22,8 @@ use ferric_core::debuglog::DebugLog;
 use ferric_core::identd;
 use ferric_core::logging::ChatLog;
 use ferric_core::mrc::interp::{
-    script_events, Effect, EchoTarget, MenuAddress, MenuNode, RunResult, Runtime, ScriptContext, WINDOW_KINDS,
+    script_events, Effect, EchoTarget, MenuAddress, MenuNode, RunResult, Runtime, ScriptContext, ScriptEvent,
+    WINDOW_KINDS,
 };
 use ferric_core::proxy::{ProxyConfig, ProxyKind};
 
@@ -500,6 +501,7 @@ async fn connect_network(
     }
     if let Err(error) = client.connect().await {
         release_connection(state.inner().as_ref(), &network_id).await;
+        run_lifecycle_event(state.inner().as_ref(), Some(&app_handle), Some(&network_id), "connectfail", error.clone()).await;
         return Err(error);
     }
 
@@ -1618,6 +1620,11 @@ async fn process_event(state: &AppSharedState, app: Option<&tauri::AppHandle>, n
         app_st.handle_event(event);
         app_st.networks.get(network).map(|net| net.nick.clone()).unwrap_or_default()
     };
+    // logon: the connection is registered. It runs just before connect, which is the closest
+    // point the event loop sees to the end of the login.
+    if let IrcEvent::Connected { .. } = event {
+        run_lifecycle_event(state, app, Some(network), "logon", String::new()).await;
+    }
     run_script_event(state, app, network, &own_nick, event).await;
     log_incoming(state, &own_nick, event);
 }
@@ -1635,27 +1642,38 @@ async fn run_script_event(
     if mapped.is_empty() {
         return;
     }
+    let default_buf = event_buffer(event);
+    dispatch_script_events(state, app, network, &default_buf, &mapped).await;
+}
+
+/// Runs the script events of one or more mapped events for a network, in both runtimes.
+async fn dispatch_script_events(
+    state: &AppSharedState,
+    app: Option<&tauri::AppHandle>,
+    network: &str,
+    default_buf: &str,
+    mapped: &[ScriptEvent],
+) {
     // One IRC event can fire several script events (a MODE line with OP and BAN changes). They
     // run in order under one lock, and their output is handled as one result.
     let result = {
         let mut runtime = state.script_runtime.lock().await;
         let mut all = RunResult::default();
-        for ev in &mapped {
+        for ev in mapped {
             let one = runtime.dispatch_event(ev, None);
             all.effects.extend(one.effects);
             all.notices.extend(one.notices);
         }
         all
     };
-    let default_buf = event_buffer(event);
-    deliver_script_result(state, app, network, &default_buf, &result).await;
+    deliver_script_result(state, app, network, default_buf, &result).await;
 
     // Python event dispatch
     let (py_result, py_ops) = {
         let mut py = state.python_runtime.lock().await;
         if py.is_enabled() {
             let mut all = RunResult::default();
-            for ev in &mapped {
+            for ev in mapped {
                 let ctx = ev.context();
                 let py_res = py.dispatch_event(ev, &ctx).await;
                 all.effects.extend(py_res.effects);
@@ -1669,8 +1687,31 @@ async fn run_script_event(
     };
     emit_dialog_ops(app, py_ops);
     if !py_result.effects.is_empty() || !py_result.notices.is_empty() {
-        deliver_script_result(state, app, network, &default_buf, &py_result).await;
+        deliver_script_result(state, app, network, default_buf, &py_result).await;
     }
+}
+
+/// Runs the scripts for a lifecycle event that is not an IRC line: start, exit, logon,
+/// connectfail, appactive. Output goes to the network's status window; without a network
+/// there is no window, so only the scripts run.
+async fn run_lifecycle_event(
+    state: &AppSharedState,
+    app: Option<&tauri::AppHandle>,
+    network: Option<&str>,
+    event: &'static str,
+    text: String,
+) {
+    let me = match network {
+        Some(net) => state.app_state.lock().await.networks.get(net).map(|n| n.nick.clone()),
+        None => None,
+    };
+    let mapped = [ScriptEvent::Lifecycle {
+        event,
+        network: network.map(String::from),
+        me,
+        text,
+    }];
+    dispatch_script_events(state, app, network.unwrap_or(""), "status", &mapped).await;
 }
 
 /// Sends the IRC lines of a result and writes its echo and notices into chat. Notices go to
@@ -2265,8 +2306,11 @@ fn set_scripts_dirty(dirty: bool, state: State<'_, Arc<AppSharedState>>) {
 
 /// Called by the editor after the user chose to leave with unsaved changes.
 #[tauri::command]
-fn exit_after_script_prompt(app_handle: tauri::AppHandle) {
+async fn exit_after_script_prompt(app_handle: tauri::AppHandle, state: State<'_, Arc<AppSharedState>>) -> Result<(), String> {
+    let state = state.inner().clone();
+    run_lifecycle_event(&state, Some(&app_handle), None, "exit", String::new()).await;
     app_handle.exit(0);
+    Ok(())
 }
 
 /// Chat logging switches. Files go to logs\<network>\<target>.log in the project folder.
@@ -2712,19 +2756,44 @@ async fn main() {
             });
             spawn_perf_logger(Arc::clone(&perf), log_dir);
             spawn_timer_driver(Arc::clone(&state), app.handle().clone());
+            // start: once per launch, after the saved scripts are loaded.
+            let start_state = Arc::clone(&state);
+            let start_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                run_lifecycle_event(&start_state, Some(&start_handle), None, "start", String::new()).await;
+            });
             app.manage(state);
             Ok(())
         })
         .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { api, .. } = event {
-                let dirty = window
-                    .try_state::<Arc<AppSharedState>>()
-                    .map(|state| state.scripts_dirty.load(Ordering::SeqCst))
-                    .unwrap_or(false);
-                if dirty {
-                    api.prevent_close();
-                    let _ = window.emit("script-close-requested", ());
+            match event {
+                WindowEvent::CloseRequested { api, .. } => {
+                    let dirty = window
+                        .try_state::<Arc<AppSharedState>>()
+                        .map(|state| state.scripts_dirty.load(Ordering::SeqCst))
+                        .unwrap_or(false);
+                    if dirty {
+                        api.prevent_close();
+                        let _ = window.emit("script-close-requested", ());
+                    } else if let Some(state) = window.try_state::<Arc<AppSharedState>>() {
+                        // exit: the scripts run before the window goes away.
+                        let state = state.inner().clone();
+                        let handle = window.app_handle().clone();
+                        tauri::async_runtime::block_on(run_lifecycle_event(&state, Some(&handle), None, "exit", String::new()));
+                    }
                 }
+                WindowEvent::Focused(true) => {
+                    // appactive: the application window got focus; the active network's scripts run.
+                    if let Some(state) = window.try_state::<Arc<AppSharedState>>() {
+                        let state = state.inner().clone();
+                        let handle = window.app_handle().clone();
+                        tauri::async_runtime::spawn(async move {
+                            let network = state.app_state.lock().await.active_network.clone();
+                            run_lifecycle_event(&state, Some(&handle), network.as_deref(), "appactive", String::new()).await;
+                        });
+                    }
+                }
+                _ => {}
             }
         })
         .invoke_handler(tauri::generate_handler![

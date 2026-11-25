@@ -5,6 +5,7 @@ import { icons } from "./icons.js";
 import { openChannelCentral, closeChannelCentral, refreshChannelCentral, channelCentralTarget } from "./channelCentral.js";
 import { initScriptDialog, isScriptDialogOpen, getOpenScriptDialogTarget, refreshOpenScriptDialog, closeOpenScriptDialog } from "./scriptDialog.js";
 import { openServerManager, closeServerManager, isServerManagerOpen, renderServerManager } from "./serverManager.js";
+import { parseServerArgs, buildServerTarget } from "./serverCommand.js";
 import {
   initColorSchemes,
   openColorsModal as openColorsDialog,
@@ -1325,6 +1326,36 @@ let syncTimer = null;
 // person leaves one entry, and the sync loop runs the entries: no callback is queued per event.
 const pendingQueryFollowUps = new Map();
 
+// Short beep for a query message (Options > Events > Play sound for query messages). No audio file.
+let queryAudioCtx = null;
+function playQuerySound() {
+  try {
+    queryAudioCtx = queryAudioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (queryAudioCtx.state === "suspended") queryAudioCtx.resume().catch(() => {});
+    const osc = queryAudioCtx.createOscillator();
+    const gain = queryAudioCtx.createGain();
+    osc.type = "sine";
+    osc.frequency.value = 880;
+    gain.gain.value = 0.08;
+    osc.connect(gain);
+    gain.connect(queryAudioCtx.destination);
+    osc.start();
+    osc.stop(queryAudioCtx.currentTime + 0.12);
+  } catch { /* no audio output available */ }
+}
+
+// Taskbar flash for a query message (Options > Messages > Flash on message: Query).
+// Only while the Ferric window is not focused; the taskbar button keeps flashing until it is.
+async function flashForQuery() {
+  if (!isTauri || document.hasFocus()) return;
+  try {
+    const { getCurrentWindow, UserAttentionType } = await import("@tauri-apps/api/window");
+    await getCurrentWindow().requestUserAttention(UserAttentionType.Informational);
+  } catch (e) {
+    console.warn("requestUserAttention failed:", e);
+  }
+}
+
 function runQueryFollowUps() {
   if (pendingQueryFollowUps.size === 0) return;
   const jobs = [...pendingQueryFollowUps.values()];
@@ -1336,11 +1367,15 @@ function runQueryFollowUps() {
     if (job.opened) {
       // activateBuffer focuses the chat input; text already typed there is kept.
       activateBuffer(job.network, job.sender);
+      if (appOptions.eventsSound) playQuerySound();
+      if (appOptions.flashQuery) flashForQuery();
       continue;
     }
     const viewing = state.active_network === job.network && syncedNet.active_buffer === job.key;
     if (viewing || state.doNotDisturb) continue;
     state.attention.add(`${job.network}/${job.key}`);
+    if (appOptions.eventsSound) playQuerySound();
+    if (appOptions.flashQuery) flashForQuery();
     dirty = true;
   }
   // One redraw for the whole burst, not one per window.
@@ -1916,6 +1951,7 @@ function updateSidebar() {
       const head = headerMap.get(net.id);
       if (head) {
         head.classList.toggle("is-current", isCurNet);
+        head.classList.toggle("is-status-active", isCurNet && net.active_buffer === "status");
         const netState = head.querySelector(".net-state");
         if (netState) {
           netState.classList.toggle("is-on", net.connected);
@@ -1965,7 +2001,8 @@ function updateSidebar() {
   const html = networks.map((net) => {
     const isCurNet = state.active_network === net.id;
     const isCollapsed = Boolean(state.collapsedNets[net.id]);
-    const rows = Object.values(net.buffers).map(buf => {
+    // The network's status window is the network entry itself (as in the classic client), so it gets no row of its own.
+    const rows = Object.values(net.buffers).filter((buf) => buf.name.toLowerCase() !== "status").map(buf => {
       const isActive = isCurNet && net.active_buffer === buf.name.toLowerCase();
       const isQuery = !buf.is_channel && buf.name.toLowerCase() !== "status";
       const iconClass = buf.is_channel ? "icon-chan" : (isQuery ? "icon-query" : "icon-status");
@@ -1990,7 +2027,7 @@ function updateSidebar() {
 
     return `
       <div class="tree-net ${isCollapsed ? "is-collapsed" : ""}">
-        <div class="network-header ${isCurNet ? "is-current" : ""}" data-net="${escapeHtml(net.id)}">
+        <div class="network-header ${isCurNet ? "is-current" : ""} ${isCurNet && net.active_buffer === "status" ? "is-status-active" : ""}" data-net="${escapeHtml(net.id)}">
           <button type="button" class="tree-box" data-toggle-net="${escapeHtml(net.id)}" aria-expanded="${isCollapsed ? "false" : "true"}" aria-label="${isCollapsed ? "Expand" : "Collapse"} ${escapeHtml(net.id)}"></button>
           <span class="network-name">${escapeHtml(net.label || net.id)}</span>
           <span class="net-state ${net.connected ? "is-on" : "is-off"}" title="${net.connected ? "Connected" : "Connecting / Disconnected"}"></span>
@@ -2601,7 +2638,13 @@ async function closeBuffer(network, bufferName) {
 async function closeNetwork(netId) {
   if (!netId || !state.networks[netId]) return;
   if (!window.confirm(`Close network ${netId}? The connection will be ended.`)) return;
+  if (!(await dropNetwork(netId))) return;
+  await syncFromBackend();
+}
 
+// Sends QUIT, drops the backend client and removes the network from the UI state.
+// Returns false when the backend could not close it, so the window stays.
+async function dropNetwork(netId) {
   if (isTauri) {
     try {
       await invoke("send_raw", { network: netId, raw: "QUIT :Closed" });
@@ -2612,7 +2655,7 @@ async function closeNetwork(netId) {
       await invoke("close_network", { network: netId });
     } catch (e) {
       console.error("close_network error:", e);
-      return;
+      return false;
     }
   }
 
@@ -2627,7 +2670,117 @@ async function closeNetwork(netId) {
   }
   invalidateLog();
   render();
+  return true;
+}
+
+// /server: syntax in serverCommand.js. The current server is disconnected first (QUIT), then the
+// new one is connected. A host that is not in the server list is added to it. /server without
+// arguments reconnects to the last server used.
+let lastServerTarget = null;
+
+async function runServerCommand(args) {
+  if (!isTauri) return;
+  const parsed = parseServerArgs(args);
+  if (!parsed.ok) {
+    notifyNoNetwork(parsed.error);
+    return;
+  }
+
+  const current = state.networks[state.active_network] || null;
+  const defaultNick = current?.current_nick || current?.nick || Object.values(state.networks)[0]?.nick || "ferric";
+  let target = null;
+
+  if (parsed.action === "last") {
+    if (!lastServerTarget) {
+      notifyNoNetwork("No server to connect to yet. Use /server <host> [port] [password].");
+      return;
+    }
+    target = { ...lastServerTarget };
+  } else if (parsed.action === "list") {
+    let rows = [];
+    try {
+      rows = (await invoke("get_server_list")).rows;
+    } catch (e) {
+      notifyNoNetwork(`Server list could not be read: ${String(e?.message || e)}`);
+      return;
+    }
+    const row = rows[parsed.index - 1];
+    if (!row) {
+      notifyNoNetwork(`The server list has no entry ${parsed.index}.`);
+      return;
+    }
+    target = {
+      host: row.host, port: row.port, tls: row.use_tls, password: row.password || null,
+      nick: row.nick, altnick: row.altnick, username: row.username, realname: row.realname,
+    };
+  } else {
+    target = buildServerTarget(parsed, defaultNick);
+  }
+
+  const proxy = proxyConnectArgs();
+  if (proxy.error) {
+    notifyNoNetwork(proxy.error);
+    return;
+  }
+
+  // The current server goes first. Its window is replaced by the new one.
+  if (current) {
+    await dropNetwork(current.id);
+  }
+  // A network with the same name is the same server; it is replaced too.
+  if (state.networks[target.host]) {
+    await dropNetwork(target.host);
+  }
+
+  try {
+    await invoke("connect_network", {
+      ...proxy.args,
+      config: {
+        network: target.host,
+        host: target.host,
+        port: target.port,
+        use_tls: target.tls,
+        nick: target.nick,
+        altnick: target.altnick,
+        username: target.username,
+        realname: target.realname,
+        password: target.password,
+        tls_fingerprint: null,
+      },
+    });
+  } catch (e) {
+    notifyNoNetwork(`Connection failed: ${String(e?.message || e)}`);
+    await syncFromBackend();
+    return;
+  }
+
+  lastServerTarget = target;
+  if (parsed.action === "connect") {
+    // The host is not in the list yet: add it, so /server N and the server manager know it.
+    try {
+      const view = await invoke("get_server_list");
+      if (!view.rows.some((row) => row.host === target.host && row.port === target.port)) {
+        await invoke("save_server_list", {
+          rows: [...view.rows, {
+            host: target.host, port: target.port, use_tls: target.tls, password: target.password,
+            nick: target.nick, altnick: target.altnick, username: target.username, realname: target.realname,
+          }],
+          expectedMtime: view.mtime,
+        });
+      }
+    } catch (e) {
+      console.warn("server list not updated:", e);
+    }
+  }
   await syncFromBackend();
+}
+
+// A /server message goes to the active window when there is one. Without a network there is no
+// window to write to, so the message is shown as an alert.
+function notifyNoNetwork(text) {
+  const net = state.networks[state.active_network];
+  if (net) pushStatusNotice(net.id, text, net.active_buffer);
+  else window.alert(text);
 }
 
 // User Command & Chat Handler
@@ -2713,6 +2866,11 @@ function openChatColorPopup(input) {
 }
 
 async function handleUserInput(text) {
+  // /server works without a network too: it is how the first connection is made.
+  if (/^\/server(\s|$)/i.test(text)) {
+    await runServerCommand(text.trim().split(/\s+/).slice(1));
+    return;
+  }
   const net = state.networks[state.active_network];
   if (!net) return;
 
@@ -3012,6 +3170,38 @@ async function handleUserInput(text) {
         }
         break;
       }
+      case "SAY": {
+        // /say <text>: plain text to the active channel or query, as if typed without the slash.
+        const sayText = args.join(" ").replace(/[\r\n\x00]/g, " ");
+        const sayBuf = net.buffers[net.active_buffer];
+        if (!sayBuf || sayBuf.name.toLowerCase() === "status") {
+          pushStatusNotice(net.id, "Not on a channel or query. Use /msg <nick> <text>.");
+        } else if (sayText && isTauri) {
+          try {
+            await invoke("send_message", { network: net.id, target: sayBuf.name, text: sayText });
+            await syncFromBackend();
+          } catch {
+            pushStatusNotice(net.id, "Message not sent. Check the connection and FiSH key.");
+          }
+        }
+        break;
+      }
+      case "DESCRIBE": {
+        // /describe <target> <text>: an action sent to a channel or nick, without changing the active window.
+        const describeTarget = args[0] || "";
+        const describeText = args.slice(1).join(" ").replace(/[\x01\r\n\x00]/g, " ");
+        if (!validIrcToken(describeTarget) || !describeText) {
+          pushStatusNotice(net.id, "Usage: /describe <target> <text>");
+        } else if (isTauri) {
+          try {
+            await invoke("send_message", { network: net.id, target: describeTarget, text: `\x01ACTION ${describeText}\x01` });
+            await syncFromBackend();
+          } catch {
+            pushStatusNotice(net.id, "Action not sent. Check the connection and FiSH key.");
+          }
+        }
+        break;
+      }
       case "ME": {
         // /me <text>: an action in the active channel or query. The FiSH key applies, as for a message.
         const actionText = args.join(" ").replace(/\x01/g, "");
@@ -3061,8 +3251,11 @@ async function handleUserInput(text) {
           const result = await invoke("run_script_alias", { name: parts[0], args: args.filter(Boolean), network: net.id, buffer: net.active_buffer });
           if (result) {
             await syncFromBackend();
-          } else {
+          } else if (IRC_PASSTHROUGH_COMMANDS.has(cmd)) {
             await invoke("send_raw", { network: net.id, raw: text.slice(1) });
+          } else {
+            // Not sent: a typo would otherwise reach the server. /raw sends any line on purpose.
+            pushStatusNotice(net.id, `Unknown command: /${parts[0]}. Use /raw to send a line to the server.`, net.active_buffer);
           }
         }
         break;
@@ -3287,6 +3480,15 @@ function prefixModesFor(networkId) {
     : [];
   return modes.length ? modes : FALLBACK_PREFIX_MODES;
 }
+
+// Standard IRC verbs sent to the server as typed when Ferric has no command of its own and no
+// script alias matches. Any other unknown /word is shown as an error, not sent.
+const IRC_PASSTHROUGH_COMMANDS = new Set([
+  "MODE", "KICK", "TOPIC", "NICK", "AWAY", "INVITE", "QUIT", "LIST", "NAMES", "WHO", "WHOWAS",
+  "OPER", "KILL", "PING", "PONG", "OP", "DEOP", "HOP", "DEHOP", "VOICE", "DEVOICE", "BAN", "UNBAN",
+  "KICKBAN", "SETNAME", "STATS", "TIME", "VERSION", "ADMIN", "INFO", "LINKS", "MOTD", "LUSERS",
+  "USERHOST", "ISON", "SILENCE", "SERVICE", "SQUIT", "WALLOPS", "CAP", "AUTHENTICATE",
+]);
 
 function validIrcToken(value) {
   return typeof value === "string" && value.length > 0 && value.length <= 200 && !/[\s,:\x00-\x1f\x7f]/.test(value);
@@ -5272,7 +5474,7 @@ function renderOptionsSubmodal() {
           <div class="options-submodal-header" id="submodal-title">IRC Events</div>
           <div class="options-submodal-body">
             <div class="options-group-plain">
-              <label class="options-toggle"><input type="checkbox" id="sub-eventsSound" ${p.eventsSound ? "checked" : ""} /> Play event sounds</label>
+              <label class="options-toggle"><input type="checkbox" id="sub-eventsSound" ${p.eventsSound ? "checked" : ""} /> Play sound for query messages</label>
               <label class="options-toggle"><input type="checkbox" id="sub-eventsFlash" ${p.eventsFlash ? "checked" : ""} /> Flash icon on activity</label>
             </div>
           </div>

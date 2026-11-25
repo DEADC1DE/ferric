@@ -470,6 +470,7 @@ impl PythonRuntime {
             ScriptEvent::Quit { .. } => "quit",
             ScriptEvent::Nick { .. } => "nick",
             ScriptEvent::CtcpReply { .. } => "ctcpreply",
+            ScriptEvent::Lifecycle { event, .. } => *event,
             ScriptEvent::Connect { .. } => "connect",
             ScriptEvent::Disconnect { .. } => "disconnect",
             ScriptEvent::Error { .. } => "error",

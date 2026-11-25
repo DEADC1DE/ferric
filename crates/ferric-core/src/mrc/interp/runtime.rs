@@ -142,6 +142,15 @@ impl ScriptContext {
 /// Supported remote IRC events: on TEXT, on JOIN, on PART, on QUIT, on NICK.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ScriptEvent {
+    /// A lifecycle event that is not an IRC line: `start`, `exit`, `logon`, `connectfail` or
+    /// `appactive`. `text` is what the handler sees as `$1-`; `network` and `me` are set only
+    /// when the event belongs to a network.
+    Lifecycle {
+        event: &'static str,
+        network: Option<String>,
+        me: Option<String>,
+        text: String,
+    },
     Text {
         nick: String,
         target: String,
@@ -313,6 +322,10 @@ impl ScriptEvent {
             ScriptEvent::Connect { network, me } => {
                 ctx.network = Some(network.clone());
                 ctx.me = Some(me.clone());
+            }
+            ScriptEvent::Lifecycle { network, me, .. } => {
+                ctx.network = network.clone();
+                ctx.me = me.clone();
             }
             ScriptEvent::Disconnect { network, me, .. } => {
                 ctx.network = Some(network.clone());
@@ -990,6 +1003,18 @@ impl Runtime {
                 // $1- is what follows the command word: `VERSION Other 1.0` gives `Other 1.0`.
                 let rest = text.split_once(' ').map_or("", |(_, rest)| rest);
                 Some((ctx, super::value::split_args(rest)))
+            }
+            ScriptEvent::Lifecycle { event, network, me, text } => {
+                if ev.event != *event {
+                    return None;
+                }
+                let ctx = ScriptContext {
+                    network: network.clone(),
+                    me: me.clone(),
+                    snicks: snicks.map(|s| s.to_string()),
+                    ..ScriptContext::default()
+                };
+                Some((ctx, super::value::split_args(text)))
             }
             ScriptEvent::Connect { network, me } => {
                 if ev.event != "connect" {
