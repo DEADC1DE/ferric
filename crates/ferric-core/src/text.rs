@@ -47,13 +47,28 @@ pub fn decode_lossy(bytes: &[u8]) -> String {
 /// bots' output uses them: `0` resets, `1` is bold, `91`/`92`/`93` are red, green and yellow.
 /// Any other escape sequence is removed, so no raw control characters reach the chat.
 pub fn ansi_to_irc(text: &str) -> String {
-    // mIRC colour numbers for ANSI 30-37 (normal) and 90-97 (bright), in ANSI order.
-    const NORMAL: [u8; 8] = [1, 5, 3, 7, 2, 6, 10, 0];
-    const BRIGHT: [u8; 8] = [14, 4, 9, 8, 12, 13, 11, 15];
+    // Colour numbers for ANSI 30-37 / 40-47 (normal) and 90-97 / 100-107 (bright).
+    const NORMAL: [u8; 8] = [1, 5, 3, 7, 2, 6, 10, 15];
+    const BRIGHT: [u8; 8] = [14, 4, 9, 8, 12, 13, 11, 0];
+    // Intensity remap of an already active normal foreground colour.
+    fn intense(fg: u8) -> u8 {
+        match fg {
+            1 => 14,
+            5 => 4,
+            3 => 9,
+            2 => 12,
+            10 => 11,
+            15 => 0,
+            7 => 8,
+            6 => 13,
+            other => other,
+        }
+    }
 
     let mut out = String::with_capacity(text.len());
     let mut fg: Option<u8> = None;
     let mut bg: Option<u8> = None;
+    let mut intensity = false;
     let mut chars = text.chars().peekable();
     while let Some(c) = chars.next() {
         if c != '\u{1b}' {
@@ -88,16 +103,28 @@ pub fn ansi_to_irc(text: &str) -> String {
                     out.push('\u{0f}');
                     fg = None;
                     bg = None;
+                    intensity = false;
                 }
-                1 => out.push('\u{02}'),
+                1 => {
+                    intensity = true;
+                    if let Some(f) = fg {
+                        fg = Some(intense(f));
+                        colour_changed = true;
+                    }
+                }
+                22 => intensity = false,
                 3 => out.push('\u{1d}'),
-                4 => out.push('\u{1f}'),
-                30..=37 => { fg = Some(NORMAL[(code - 30) as usize]); colour_changed = true; }
+                4 | 21 => out.push('\u{1f}'),
+                7 => out.push('\u{16}'),
+                9 => out.push('\u{1e}'),
+                30..=37 => {
+                    let idx = (code - 30) as usize;
+                    fg = Some(if intensity { BRIGHT[idx] } else { NORMAL[idx] });
+                    colour_changed = true;
+                }
                 90..=97 => { fg = Some(BRIGHT[(code - 90) as usize]); colour_changed = true; }
-                39 => { fg = None; colour_changed = true; }
                 40..=47 => { bg = Some(NORMAL[(code - 40) as usize]); colour_changed = true; }
-                100..=107 => { bg = Some(BRIGHT[(code - 100) as usize]); colour_changed = true; }
-                49 => { bg = None; colour_changed = true; }
+                100..=107 => { bg = Some(NORMAL[(code - 100) as usize]); colour_changed = true; }
                 _ => {}
             }
         }
@@ -184,17 +211,18 @@ mod tests {
         // The stats bot's crown: yellow ♔, then reset.
         assert_eq!(ansi_to_irc("ago\u{1b}[93m\u{2654}\u{1b}[0m)"), "ago\u{3}08\u{2654}\u{f})");
         assert_eq!(ansi_to_irc("\u{1b}[92m▲\u{1b}[0m 1"), "\u{3}09▲\u{f} 1");
-        assert_eq!(ansi_to_irc("\u{1b}[1;91mX"), "\u{2}\u{3}04X");
+        assert_eq!(ansi_to_irc("\u{1b}[1;91mX"), "\u{3}04X");
     }
 
     #[test]
     fn ansi_all_colours_and_backgrounds() {
         assert_eq!(ansi_to_irc("\u{1b}[31mR"), "\u{3}05R");
         assert_eq!(ansi_to_irc("\u{1b}[30mK"), "\u{3}01K");
-        assert_eq!(ansi_to_irc("\u{1b}[97mW"), "\u{3}15W");
+        assert_eq!(ansi_to_irc("\u{1b}[97mW"), "\u{3}00W");
+        assert_eq!(ansi_to_irc("\u{1b}[37mG"), "\u{3}15G");
         assert_eq!(ansi_to_irc("\u{1b}[31;44mZ"), "\u{3}05,02Z");
         assert_eq!(ansi_to_irc("\u{1b}[41mQ"), "\u{3}99,05Q");
-        assert_eq!(ansi_to_irc("\u{1b}[39mD"), "\u{3}D");
+        assert_eq!(ansi_to_irc("\u{1b}[39mD"), "D"); // 39 and 49 change nothing
     }
 
     #[test]
