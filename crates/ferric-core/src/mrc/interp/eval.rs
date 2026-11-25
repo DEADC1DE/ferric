@@ -672,9 +672,9 @@ impl<'a> Exec<'a> {
                 self.push_irc(effect)
             }
             "me" => {
-                // The target is the one of the event; a run without one has no window to use.
+                // The target is the channel or private sender; a run without one has no window to use.
                 // No window to act in: a silent return.
-                let Some(target) = self.context.target.clone() else {
+                let Some(target) = self.reply_target() else {
                     return Ok(Flow::Next);
                 };
                 let body = self.irc_args(st, name)?;
@@ -764,7 +764,7 @@ impl<'a> Exec<'a> {
                 self.push_irc(IrcEffect::Raw(line))
             }
             "say" => {
-                let Some(target) = self.context.target.clone() else {
+                let Some(target) = self.reply_target() else {
                     return fail("/say needs a target from an event; use /msg <target> <text>; run stopped");
                 };
                 let body = self.irc_args(st, name)?;
@@ -1058,7 +1058,9 @@ impl<'a> Exec<'a> {
         let (interval, milliseconds) = if raw < 1 { (1, true) } else { (raw as u64, milliseconds) };
         let period_ms = if milliseconds { interval } else { interval.saturating_mul(1000) };
         let period = Duration::from_millis(period_ms).max(MIN_PERIOD);
-        let next_due = self.now + period;
+        let Some(next_due) = self.now.checked_add(period) else {
+            return fail("/timer interval is too large; run stopped");
+        };
         let timer = Timer {
             name: name.to_ascii_lowercase(),
             owner: self.owner.clone(),
@@ -1720,5 +1722,17 @@ impl<'a> Exec<'a> {
             // Ferric choice: a lone operand is true when it is a non-zero integer.
             Cond::Truth(t) => Ok(int_strict(&self.eval_text(t, false)?).is_some_and(|n| n != 0)),
         }
+    }
+
+    fn reply_target(&self) -> Option<String> {
+        if self.context.chan.is_some() {
+            return self.context.chan.clone();
+        }
+        if let Some(target) = self.context.target.as_deref() {
+            if crate::text::is_channel_name(target) {
+                return Some(target.to_string());
+            }
+        }
+        self.context.nick.clone().or_else(|| self.context.target.clone())
     }
 }

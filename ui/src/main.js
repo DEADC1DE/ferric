@@ -5,7 +5,7 @@ import { icons } from "./icons.js";
 import { openChannelCentral, closeChannelCentral, refreshChannelCentral, channelCentralTarget } from "./channelCentral.js";
 import { initScriptDialog, isScriptDialogOpen, getOpenScriptDialogTarget, refreshOpenScriptDialog, closeOpenScriptDialog } from "./scriptDialog.js";
 import { openServerManager, closeServerManager, isServerManagerOpen, renderServerManager } from "./serverManager.js";
-import { parseServerArgs, buildServerTarget } from "./serverCommand.js";
+import { parseServerArgs, buildServerTarget, applyServerOverrides } from "./serverCommand.js";
 import {
   initColorSchemes,
   openColorsModal as openColorsDialog,
@@ -625,10 +625,9 @@ function mountAppShell() {
             id="chat-input"
             class="chat-input"
             rows="1"
-            placeholder="Connect to a server to start chatting"
+            placeholder="Type /server <host> or use Connect to start chatting"
             autocomplete="off"
             spellcheck="false"
-            disabled
           ></textarea>
         </footer>
       </main>
@@ -1339,6 +1338,10 @@ function playQuerySound() {
     gain.gain.value = 0.08;
     osc.connect(gain);
     gain.connect(queryAudioCtx.destination);
+    osc.onended = () => {
+      osc.disconnect();
+      gain.disconnect();
+    };
     osc.start();
     osc.stop(queryAudioCtx.currentTime + 0.12);
   } catch { /* no audio output available */ }
@@ -1361,22 +1364,25 @@ function runQueryFollowUps() {
   const jobs = [...pendingQueryFollowUps.values()];
   pendingQueryFollowUps.clear();
   let dirty = false;
+  let notifyQuery = false;
   for (const job of jobs) {
     const syncedNet = state.networks[job.network];
     if (!syncedNet?.buffers[job.key]) continue;
     if (job.opened) {
       // activateBuffer focuses the chat input; text already typed there is kept.
       activateBuffer(job.network, job.sender);
-      if (appOptions.eventsSound) playQuerySound();
-      if (appOptions.flashQuery) flashForQuery();
+      if (!state.doNotDisturb) notifyQuery = true;
       continue;
     }
     const viewing = state.active_network === job.network && syncedNet.active_buffer === job.key;
     if (viewing || state.doNotDisturb) continue;
     state.attention.add(`${job.network}/${job.key}`);
+    notifyQuery = true;
+    dirty = true;
+  }
+  if (notifyQuery) {
     if (appOptions.eventsSound) playQuerySound();
     if (appOptions.flashQuery) flashForQuery();
-    dirty = true;
   }
   // One redraw for the whole burst, not one per window.
   if (dirty) render();
@@ -1857,10 +1863,11 @@ function render() {
   // 5. Input Field Placeholder (input element stays untouched!)
   const input = document.getElementById("chat-input");
   if (input) {
-    const placeholder = activeBuf ? `Message ${activeBuf.name} (type /help, /query <nick>, /fish <key>)` : "Connect to a server to start chatting";
+    const placeholder = activeBuf
+      ? `Message ${activeBuf.name} (type /help, /query <nick>, /fish <key>)`
+      : "Type /server <host> or use Connect to start chatting";
     if (input.placeholder !== placeholder) input.placeholder = placeholder;
-    const disabled = !activeBuf;
-    if (input.disabled !== disabled) input.disabled = disabled;
+    if (input.disabled) input.disabled = false;
   }
 
   // 6. Nicklist
@@ -2277,15 +2284,22 @@ function updateMessages(activeBuf, wasAtBottom = true) {
     if (isAtBottom) {
       while (log.childElementCount > MAX_DOM_ROWS_AT_BOTTOM) {
         log.firstElementChild.remove();
-        startIndex++;
       }
     } else {
       const oldHeight = log.scrollHeight;
       while (log.childElementCount > MAX_DOM_ROWS_SCROLLED) {
         log.firstElementChild.remove();
-        startIndex++;
       }
       log.scrollTop = Math.max(0, log.scrollTop - (oldHeight - log.scrollHeight));
+    }
+    // Sync startIndex to the first visible DOM row (handles hidden/ignored messages).
+    const firstDomId = log.firstElementChild?.dataset?.msgId;
+    if (firstDomId !== undefined) {
+      while (startIndex < count && String(msgs[startIndex].id) !== firstDomId) {
+        startIndex++;
+      }
+    } else {
+      startIndex = count;
     }
   } else {
     startIndex = Math.max(0, count - INITIAL_DOM_ROWS);
@@ -2412,7 +2426,7 @@ function buildMessageRow(msg, nickColor, modePrefix) {
   // Part and topic lines take their saved colour from Options > Colors.
   const contentColour = kind === "part" ? "var(--col-part)" : kind === "topic" ? "var(--col-topic)" : "";
   const contentAttr = contentColour ? ` style="color: ${contentColour}"` : "";
-  return `<div class="msg-row${extraClass}">${timeSpan}${lead}<span class="msg-content"${contentAttr}>${contentHtml}</span></div>`;
+  return `<div class="msg-row${extraClass}" data-msg-id="${escapeHtml(String(msg.id ?? ""))}">${timeSpan}${lead}<span class="msg-content"${contentAttr}>${contentHtml}</span></div>`;
 }
 
 // Nick list selection: lowercased nicks of one buffer. `key` ties it to that buffer, so a
@@ -2695,7 +2709,7 @@ async function runServerCommand(args) {
       notifyNoNetwork("No server to connect to yet. Use /server <host> [port] [password].");
       return;
     }
-    target = { ...lastServerTarget };
+    target = applyServerOverrides(lastServerTarget, parsed);
   } else if (parsed.action === "list") {
     let rows = [];
     try {
@@ -2709,10 +2723,10 @@ async function runServerCommand(args) {
       notifyNoNetwork(`The server list has no entry ${parsed.index}.`);
       return;
     }
-    target = {
+    target = applyServerOverrides({
       host: row.host, port: row.port, tls: row.use_tls, password: row.password || null,
       nick: row.nick, altnick: row.altnick, username: row.username, realname: row.realname,
-    };
+    }, parsed);
   } else {
     target = buildServerTarget(parsed, defaultNick);
   }
@@ -2724,13 +2738,9 @@ async function runServerCommand(args) {
   }
 
   // The current server goes first. Its window is replaced by the new one.
-  if (current) {
-    await dropNetwork(current.id);
-  }
+  if (current && !(await dropNetwork(current.id))) return;
   // A network with the same name is the same server; it is replaced too.
-  if (state.networks[target.host]) {
-    await dropNetwork(target.host);
-  }
+  if (state.networks[target.host] && !(await dropNetwork(target.host))) return;
 
   try {
     await invoke("connect_network", {
@@ -2867,16 +2877,23 @@ function openChatColorPopup(input) {
 
 async function handleUserInput(text) {
   // /server works without a network too: it is how the first connection is made.
-  if (/^\/server(\s|$)/i.test(text)) {
+  if (/^\s*\/server(\s|$)/i.test(text)) {
     await runServerCommand(text.trim().split(/\s+/).slice(1));
     return;
   }
   const net = state.networks[state.active_network];
-  if (!net) return;
+  if (!net) {
+    if (text.trim()) notifyNoNetwork("Not connected. Use /server <host> [port] [password].");
+    return;
+  }
 
   if (text.startsWith("/")) {
-    const parts = text.slice(1).split(" ");
-    const cmd = parts[0].toUpperCase();
+    const m = /^\s*(\S+)(?:\s+([\s\S]*))?$/.exec(text.slice(1));
+    if (!m) return;
+    const cmdName = m[1];
+    const cmd = cmdName.toUpperCase();
+    const argTail = m[2] || "";
+    const parts = [cmdName, ...(argTail ? argTail.split(/\s+/) : [])];
     const args = parts.slice(1);
 
     switch (cmd) {
@@ -3485,9 +3502,9 @@ function prefixModesFor(networkId) {
 // script alias matches. Any other unknown /word is shown as an error, not sent.
 const IRC_PASSTHROUGH_COMMANDS = new Set([
   "MODE", "KICK", "TOPIC", "NICK", "AWAY", "INVITE", "QUIT", "LIST", "NAMES", "WHO", "WHOWAS",
-  "OPER", "KILL", "PING", "PONG", "OP", "DEOP", "HOP", "DEHOP", "VOICE", "DEVOICE", "BAN", "UNBAN",
-  "KICKBAN", "SETNAME", "STATS", "TIME", "VERSION", "ADMIN", "INFO", "LINKS", "MOTD", "LUSERS",
-  "USERHOST", "ISON", "SILENCE", "SERVICE", "SQUIT", "WALLOPS", "CAP", "AUTHENTICATE",
+  "OPER", "KILL", "PING", "PONG", "SETNAME", "STATS", "TIME", "VERSION", "ADMIN", "INFO", "LINKS",
+  "MOTD", "LUSERS", "USERHOST", "ISON", "SILENCE", "SERVICE", "SQUIT", "WALLOPS", "CAP",
+  "AUTHENTICATE",
 ]);
 
 function validIrcToken(value) {
@@ -4162,12 +4179,14 @@ function dismissSlotDialogs() {
   if (isColorsModalOpen()) closeColorsModal();
   if (isAddressBookModalOpen()) closeAddressBookModal();
   if (isScriptDialogOpen()) closeOpenScriptDialog(true);
+  closeChannelCentral();
 }
 
 // Opening Colors or the address book closes the other dialogs too: no open flag is left behind to hide
 // the next dialog, and the other slot dialog is closed with its own cancel rules.
 function closeSideDialogs() {
   if (isServerManagerOpen()) closeServerManager();
+  closeChannelCentral();
   state.showConnectModal = false;
   state.showFishModal = false;
   state.showOptionsModal = false;
@@ -5729,6 +5748,7 @@ function renderOptionsModal() {
 }
 
 function renderFishModal() {
+  if (!state.showFishModal) return;
   const container = document.getElementById("modal-container");
   if (!container) return;
 

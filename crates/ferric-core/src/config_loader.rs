@@ -41,7 +41,8 @@ pub fn parse_connectd_mrc<P: AsRef<Path>>(path: P) -> Result<Vec<ConfigServerEnt
 
         // The label is the first host segment and the user name. Two servers can share it,
         // so a repeated label gets a number; a repeated id would drop the second server.
-        let base = format!("{}-{}", host.split('.').next().unwrap_or("irc"), username);
+        let host_label = host.split('.').next().unwrap_or("irc").replace(':', "_");
+        let base = format!("{}-{}", host_label, username);
         let mut net_label = base.clone();
         let mut n = 2;
         while entries.iter().any(|e: &ConfigServerEntry| e.network_id == net_label) {
@@ -740,9 +741,9 @@ pub fn tls_pin_key(host: &str, port: u16) -> String {
     format!("{}:{}", host.to_ascii_lowercase(), port)
 }
 
-/// Reads the TLS pins in `ferric-tls-pins.txt`: one server per line, `host:port`, a tab, then the
-/// SHA-256 fingerprint in hex. A missing file gives no pins.
-pub fn load_tls_pins<P: AsRef<Path>>(path: P) -> HashMap<String, String> {
+static TLS_PINS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn read_tls_pins_unlocked(path: &Path) -> HashMap<String, String> {
     let Ok(text) = fs::read_to_string(path) else {
         return HashMap::new();
     };
@@ -754,13 +755,22 @@ pub fn load_tls_pins<P: AsRef<Path>>(path: P) -> HashMap<String, String> {
         .collect()
 }
 
+/// Reads the TLS pins in `ferric-tls-pins.txt`: one server per line, `host:port`, a tab, then the
+/// SHA-256 fingerprint in hex. A missing file gives no pins.
+pub fn load_tls_pins<P: AsRef<Path>>(path: P) -> HashMap<String, String> {
+    let _guard = TLS_PINS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    read_tls_pins_unlocked(path.as_ref())
+}
+
 /// Stores the fingerprint pinned for a server, replacing an earlier pin for it.
 pub fn save_tls_pin<P: AsRef<Path>>(path: P, key: &str, fingerprint: &str) -> Result<(), String> {
-    let mut pins = load_tls_pins(&path);
+    let path = path.as_ref();
+    let _guard = TLS_PINS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut pins = read_tls_pins_unlocked(path);
     pins.insert(key.to_string(), fingerprint.to_ascii_lowercase());
     let mut lines: Vec<String> = pins.iter().map(|(k, v)| format!("{k}\t{v}\n")).collect();
     lines.sort();
-    fs::write(path, lines.concat()).map_err(|e| format!("Failed to write the TLS pins: {e}"))
+    write_atomic(path, lines.concat().as_bytes())
 }
 
 #[cfg(test)]

@@ -797,6 +797,13 @@ function bindUsersTabEvents(container) {
       notes: container.querySelector("#ab-notes")?.value || "",
       picture: ""
     };
+    const existing = state.users[state.selectedUserIdx];
+    if (existing && existing.nick === newUser.nick && existing.name === newUser.name && existing.email === newUser.email && existing.website === newUser.website && existing.address === newUser.address && existing.notes === newUser.notes) {
+      // onchange on blur already created this exact entry when the list was empty.
+      saveAddressBook();
+      renderAddressBookModal();
+      return;
+    }
     state.users.push(newUser);
     state.selectedUserIdx = state.users.length - 1;
     saveAddressBook();

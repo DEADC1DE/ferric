@@ -123,7 +123,7 @@ class FerricModule(types.ModuleType):
     # --- Decorators ---
     def on(self, event_name, match="*", target="*"):
         """Decorator: register an event handler.
-        Supported events: text, action, notice, join, part, quit, nick, kick, topic, mode, connect, disconnect, error, ctcpreply.
+        Supported events: text, action, notice, join, part, quit, nick, kick, topic, mode, usermode, connect, disconnect, error, ctcpreply, start, exit, logon, connectfail, appactive.
         """
         def decorator(fn):
             if _loading_script is not None:
@@ -283,21 +283,32 @@ def handle_load(name, content):
 
     _loading_script = None
 
-    # Previous version exists: invoke previous on_unload before overwriting
-    if norm_name in _scripts and _scripts[norm_name].get("on_unload"):
-        try:
-            _invoke_fn(_scripts[norm_name]["on_unload"])
-        except Exception as e:
-            _current_notices.append(f"Error in {name} previous on_unload: {e}")
+    # Previous version exists: close its open dialogs and invoke previous on_unload before overwriting
+    if norm_name in _scripts:
+        to_close = [did for did, owner in list(_open_dialogs.items()) if owner == norm_name]
+        for did in to_close:
+            _open_dialogs.pop(did, None)
+            _current_dialog_ops.append({"op": "close", "id": did})
+        if _scripts[norm_name].get("on_unload"):
+            _current_script_name = norm_name
+            try:
+                _invoke_fn(_scripts[norm_name]["on_unload"])
+            except Exception as e:
+                _current_notices.append(f"Error in {name} previous on_unload: {e}")
+            finally:
+                _current_script_name = None
 
     _scripts[norm_name] = new_script
 
     # Run on_load
     if new_script["on_load"]:
+        _current_script_name = norm_name
         try:
             _invoke_fn(new_script["on_load"])
         except Exception as e:
             _current_notices.append(f"Error in {name} on_load: {e}")
+        finally:
+            _current_script_name = None
 
     all_events, all_aliases, all_menus = _collect_all_registrations()
 

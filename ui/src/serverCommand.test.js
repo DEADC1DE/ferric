@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildServerTarget, parseServerArgs } from "./serverCommand.js";
+import { applyServerOverrides, buildServerTarget, parseServerArgs } from "./serverCommand.js";
 
 test("no arguments reconnects to the last server", () => {
   assert.deepEqual(parseServerArgs([]).action, "last");
@@ -81,4 +81,44 @@ test("unknown switches are refused", () => {
 test("out-of-range and extra arguments are errors", () => {
   assert.equal(parseServerArgs(["irc.example.org", "70000"]).ok, false);
   assert.equal(parseServerArgs(["irc.example.org", "6667", "pw", "extra"]).ok, false);
+});
+
+test("trailing colon uses default port and ::1 reports IPv6 unsupported", () => {
+  const trailing = parseServerArgs(["irc.example.org:"]);
+  assert.equal(trailing.ok, true);
+  assert.equal(trailing.port, 6667);
+
+  const skippedPort = parseServerArgs(["irc.example.org::secret"]);
+  assert.equal(skippedPort.ok, true);
+  assert.equal(skippedPort.port, 6667);
+  assert.equal(skippedPort.password, "secret");
+
+  const v6 = parseServerArgs(["::1"]);
+  assert.equal(v6.ok, false);
+  assert.match(v6.error, /IPv6/);
+});
+
+test("-e and -i are kept on list and last actions", () => {
+  const list = parseServerArgs(["-e", "2", "-i", "n1", "n2", "u@h", "Full Name"]);
+  assert.equal(list.ok, true);
+  assert.equal(list.action, "list");
+  assert.equal(list.index, 2);
+  assert.equal(list.tls, true);
+  assert.equal(list.identity.nick, "n1");
+
+  const last = parseServerArgs(["-e", "-i", "n1"]);
+  assert.equal(last.ok, true);
+  assert.equal(last.action, "last");
+  assert.equal(last.tls, true);
+  assert.equal(last.identity.nick, "n1");
+
+  const merged = applyServerOverrides(
+    { host: "irc.example.org", port: 6667, tls: false, password: null, nick: "old", altnick: "old_", username: "u", realname: "Old" },
+    list,
+  );
+  assert.equal(merged.tls, true);
+  assert.equal(merged.nick, "n1");
+  assert.equal(merged.altnick, "n2");
+  assert.equal(merged.username, "u");
+  assert.equal(merged.realname, "Full Name");
 });

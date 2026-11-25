@@ -28,7 +28,10 @@ export function askText(question) {
     });
     backdrop.querySelector("[data-cancel]").addEventListener("click", () => finish(null));
     backdrop.addEventListener("keydown", (e) => {
-      if (e.key === "Escape") finish(null);
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        finish(null);
+      }
     });
     document.body.appendChild(backdrop);
     input.focus();

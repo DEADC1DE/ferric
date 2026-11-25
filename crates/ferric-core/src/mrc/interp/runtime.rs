@@ -828,9 +828,10 @@ impl Runtime {
                 };
                 // A body that made a timer with this name has replaced this one.
                 if more && !switched_off && !self.timers.contains(&name) {
-                    let next = timer.next_due + timer.period;
-                    timer.next_due = if next > now { next } else { now + timer.period };
-                    self.timers.put(timer);
+                    if let Some(next) = timer.next_due.checked_add(timer.period).filter(|&t| t > now).or_else(|| now.checked_add(timer.period)) {
+                        timer.next_due = next;
+                        self.timers.put(timer);
+                    }
                 }
             }
             runs.push(TimerRun {

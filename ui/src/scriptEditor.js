@@ -1151,13 +1151,16 @@ export function createScriptEditor({ isTauri, onStatus = null }) {
       setMessage("No changes to save.");
       return true;
     }
+    const savingDoc = doc;
     busy = true;
     try {
       const content = els.ta.value;
       try {
-        const mtime = await getApi().write(doc.name, content, doc.mtime);
+        const mtime = await getApi().write(savingDoc.name, content, savingDoc.mtime);
+        if (!isOpen || doc !== savingDoc) return false;
         return await afterSave(content, mtime);
       } catch (err) {
+        if (!isOpen || doc !== savingDoc) return false;
         const e = normalizeError(err);
         if (e.code === "conflict") return await resolveConflict(content, e.message);
         setMessage(e.message, "error");
@@ -1367,7 +1370,7 @@ export function createScriptEditor({ isTauri, onStatus = null }) {
       return;
     }
 
-    const lineStart = v.lastIndexOf("\n", s - 1) + 1;
+    const lineStart = s === 0 ? 0 : v.lastIndexOf("\n", s - 1) + 1;
     const endRef = e > s && v[e - 1] === "\n" ? e - 1 : e;
     let lineEnd = v.indexOf("\n", endRef);
     if (lineEnd === -1) lineEnd = v.length;
@@ -1404,7 +1407,7 @@ export function createScriptEditor({ isTauri, onStatus = null }) {
     const ta = els.ta;
     const v = ta.value;
     const s = ta.selectionStart;
-    const lineStart = v.lastIndexOf("\n", s - 1) + 1;
+    const lineStart = s === 0 ? 0 : v.lastIndexOf("\n", s - 1) + 1;
     const before = v.slice(lineStart, s);
     let indent = /^[ \t]*/.exec(before)[0];
     const isPy = doc && /\.py$/i.test(doc.name);

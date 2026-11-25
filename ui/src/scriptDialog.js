@@ -236,7 +236,7 @@ function renderScriptDialog() {
   let noticeHtml = "";
   if (spec.notice) {
     const lvl = spec.notice.level || "info";
-    noticeHtml = `<div class="script-dlg-notice is-${escapeHtml(lvl)}">${escapeHtml(spec.notice.text)}</div>`;
+    noticeHtml = `<div class="script-dlg-notice is-${escapeHtml(lvl)}">${escapeHtml(String(spec.notice.text ?? ""))}</div>`;
   }
 
   container.innerHTML = `
@@ -430,10 +430,11 @@ function renderControl(ctrl) {
                 ${rows.length === 0 ? `
                   <tr><td colspan="${cols.length + 1}" class="script-dlg-empty-td">${escapeHtml(ctrl.empty_text || "No entries listed.")}</td></tr>
                 ` : rows.map((row) => {
-                  const isChecked = selectedSet.has(row.id || row.mask);
+                  const rowId = String(row.id ?? row.mask ?? "");
+                  const isChecked = selectedSet.has(rowId);
                   return `
-                    <tr class="${isChecked ? "is-selected" : ""}" data-row-id="${escapeHtml(row.id || row.mask)}">
-                      <td class="td-chk"><input type="checkbox" class="script-dlg-row-chk" data-table="${escapeHtml(ctrl.id)}" data-row-id="${escapeHtml(row.id || row.mask)}" ${isChecked ? "checked" : ""} /></td>
+                    <tr class="${isChecked ? "is-selected" : ""}" data-row-id="${escapeHtml(rowId)}">
+                      <td class="td-chk"><input type="checkbox" class="script-dlg-row-chk" data-table="${escapeHtml(ctrl.id)}" data-row-id="${escapeHtml(rowId)}" ${isChecked ? "checked" : ""} /></td>
                       ${cols.map((col) => `<td>${escapeHtml(String(row[col.id] ?? ""))}</td>`).join("")}
                     </tr>
                   `;

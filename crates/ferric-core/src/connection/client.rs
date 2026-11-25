@@ -1313,8 +1313,9 @@ async fn run_client_loops<R, W>(
                             // Only a line that may be encrypted needs the keys; plain text takes no lock.
                             let keys = fish_keys.lock().await;
                             let own = own_nick.lock().map(|n| n.clone()).unwrap_or_default();
-                            let key_target = if is_channel_name_with(target, chantypes.as_deref()) {
-                                target.to_lowercase()
+                            let clean_target = crate::text::strip_status_prefix(target, chantypes.as_deref());
+                            let key_target = if is_channel_name_with(clean_target, chantypes.as_deref()) {
+                                clean_target.to_lowercase()
                             } else if sender.eq_ignore_ascii_case(&own) {
                                 // Our own private message, echoed back: its key is the one for the
                                 // person we wrote to, not for ourselves.
@@ -1973,17 +1974,22 @@ fn parse_server_time(value: &str) -> Option<u64> {
     let hour: i64 = t.next()?.parse().ok()?;
     let minute: i64 = t.next()?.parse().ok()?;
     let second: i64 = t.next()?.parse().ok()?;
-    let millis: i64 = format!("{:0<3}", &frac[..frac.len().min(3)]).parse().ok()?;
+    let frac_chars: String = frac.chars().take(3).collect();
+    let millis: i64 = format!("{frac_chars:0<3}").parse().ok()?;
     // Days since 1970-01-01 (proleptic Gregorian calendar).
-    let y = if month <= 2 { year - 1 } else { year };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let y = if month <= 2 { year.checked_sub(1)? } else { year };
+    let era = if y >= 0 { y } else { y.checked_sub(399)? } / 400;
     let yoe = y - era * 400;
     let mp = (month + 9) % 12;
     let doy = (153 * mp + 2) / 5 + day - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146_097 + doe - 719_468;
-    let seconds = days * 86_400 + hour * 3_600 + minute * 60 + second;
-    u64::try_from(seconds * 1_000 + millis).ok()
+    let days = era.checked_mul(146_097)?.checked_add(doe)?.checked_sub(719_468)?;
+    let seconds = days
+        .checked_mul(86_400)?
+        .checked_add(hour.checked_mul(3_600)?)?
+        .checked_add(minute.checked_mul(60)?)?
+        .checked_add(second)?;
+    u64::try_from(seconds.checked_mul(1_000)?.checked_add(millis)?).ok()
 }
 
 /// A server notice for the status window.
@@ -2262,5 +2268,12 @@ mod fingerprint_tests {
         assert_eq!(parse_fingerprint(&spaced).unwrap(), [0xab; 32]);
         assert!(parse_fingerprint("abc").is_err());
         assert!(parse_fingerprint(&"zz".repeat(32)).is_err());
+    }
+
+    #[test]
+    fn parse_server_time_handles_utf8_and_extreme_years_without_panicking() {
+        assert_eq!(super::parse_server_time("2026-11-22T10:00:00.1€Z"), None);
+        assert_eq!(super::parse_server_time("99999999999999999-01-01T00:00:00Z"), None);
+        assert_eq!(super::parse_server_time("2026-11-22T10:00:00.25Z"), Some(1_795_341_600_250));
     }
 }

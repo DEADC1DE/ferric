@@ -242,7 +242,12 @@ pub(crate) fn call(name: &str, args: &[String], clock: &Clock) -> Result<String,
         ("timezone", 0) => (-clock.standard).to_string(),
         ("daylight", 0) => (clock.offset - clock.standard).max(0).to_string(),
         ("asctime", 1) => match args[0].trim().parse::<i64>() {
-            Ok(n) => format(&fields(n + i64::from(clock.offset), clock.offset), FULLDATE),
+            Ok(n) => {
+                let adj = n
+                    .checked_add(i64::from(clock.offset))
+                    .ok_or_else(|| CallError::Arguments(format!("'{}' is out of range", args[0])))?;
+                format(&fields(adj, clock.offset), FULLDATE)
+            }
             Err(_) => format(&local, &args[0]),
         },
         ("asctime", 2) => {
@@ -250,7 +255,10 @@ pub(crate) fn call(name: &str, args: &[String], clock: &Clock) -> Result<String,
                 .trim()
                 .parse::<i64>()
                 .map_err(|_| CallError::Arguments(format!("'{}' is not a time value", args[0])))?;
-            format(&fields(n + i64::from(clock.offset), clock.offset), &args[1])
+            let adj = n
+                .checked_add(i64::from(clock.offset))
+                .ok_or_else(|| CallError::Arguments(format!("'{}' is out of range", args[0])))?;
+            format(&fields(adj, clock.offset), &args[1])
         }
         ("ctime", 1) => {
             return Err(CallError::Arguments(

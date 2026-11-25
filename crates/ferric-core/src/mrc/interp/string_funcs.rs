@@ -92,7 +92,7 @@ fn remove_all(text: &str, needle: &str, cs: bool) -> String {
 }
 
 /// Replaces each pair in turn. Text put in by an earlier pair is not replaced again.
-fn replace_x(text: &str, pairs: &[String], cs: bool) -> String {
+fn replace_x(text: &str, pairs: &[String], cs: bool, max_bytes: usize) -> Result<String, CallError> {
     let mut segments: Vec<(String, bool)> = vec![(text.to_string(), false)];
     for pair in pairs.chunks(2) {
         let pat = chars(&pair[0]);
@@ -100,8 +100,13 @@ fn replace_x(text: &str, pairs: &[String], cs: bool) -> String {
             continue;
         }
         let mut next = Vec::new();
+        let mut total_bytes = 0usize;
         for (segment, protected) in segments {
             if protected {
+                total_bytes = total_bytes.saturating_add(segment.len());
+                if total_bytes > max_bytes {
+                    return Err(CallError::TooLong);
+                }
                 next.push((segment, true));
                 continue;
             }
@@ -109,18 +114,32 @@ fn replace_x(text: &str, pairs: &[String], cs: bool) -> String {
             let mut at = 0;
             for start in matches(&hay, &pat, cs) {
                 if start > at {
-                    next.push((hay[at..start].iter().collect(), false));
+                    let prefix: String = hay[at..start].iter().collect();
+                    total_bytes = total_bytes.saturating_add(prefix.len());
+                    if total_bytes > max_bytes {
+                        return Err(CallError::TooLong);
+                    }
+                    next.push((prefix, false));
+                }
+                total_bytes = total_bytes.saturating_add(pair[1].len());
+                if total_bytes > max_bytes {
+                    return Err(CallError::TooLong);
                 }
                 next.push((pair[1].clone(), true));
                 at = start + pat.len();
             }
             if at < hay.len() {
-                next.push((hay[at..].iter().collect(), false));
+                let tail: String = hay[at..].iter().collect();
+                total_bytes = total_bytes.saturating_add(tail.len());
+                if total_bytes > max_bytes {
+                    return Err(CallError::TooLong);
+                }
+                next.push((tail, false));
             }
         }
         segments = next;
     }
-    segments.into_iter().map(|(s, _)| s).collect()
+    Ok(segments.into_iter().map(|(s, _)| s).collect())
 }
 
 fn count_all(text: &str, needles: &[String], cs: bool) -> usize {
@@ -272,7 +291,7 @@ fn skip_digits(text: &[char], at: usize, max: usize, ok: impl Fn(&char) -> bool)
 }
 
 /// Answers one string identifier. `args` are the evaluated parameters.
-pub(crate) fn call(name: &str, args: &[String]) -> Result<String, CallError> {
+pub(crate) fn call(name: &str, args: &[String], max_bytes: usize) -> Result<String, CallError> {
     let arity = |lo: usize, hi: usize| -> Result<(), CallError> {
         if (lo..=hi).contains(&args.len()) {
             Ok(())
@@ -341,7 +360,7 @@ pub(crate) fn call(name: &str, args: &[String]) -> Result<String, CallError> {
                     "$replacex takes a text and pairs of substring and newstring".into(),
                 ));
             }
-            replace_x(&args[0], &args[1..], cs)
+            replace_x(&args[0], &args[1..], cs, max_bytes)?
         }
         "isnum" => {
             arity(1, 4)?;
@@ -388,10 +407,22 @@ pub(crate) fn call(name: &str, args: &[String]) -> Result<String, CallError> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::CallError;
+
+    fn call(name: &str, args: &[String]) -> Result<String, CallError> {
+        super::call(name, args, 65_536)
+    }
 
     fn v(args: &[&str]) -> Vec<String> {
         args.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn replacex_enforces_max_bytes() {
+        let big = "a".repeat(1024);
+        let rep = "b".repeat(1024);
+        let res = super::call("replacex", &[big, "a".into(), rep], 65_536);
+        assert!(matches!(res, Err(CallError::TooLong)));
     }
 
     #[test]

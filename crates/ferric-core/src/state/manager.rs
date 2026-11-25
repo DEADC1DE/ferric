@@ -625,6 +625,9 @@ impl AppState {
         for (key, net) in &self.networks {
             key.hash(&mut h);
             net.id.hash(&mut h);
+            net.label.hash(&mut h);
+            net.order.hash(&mut h);
+            net.enabled.hash(&mut h);
             net.server.hash(&mut h);
             net.nick.hash(&mut h);
             net.connected.hash(&mut h);

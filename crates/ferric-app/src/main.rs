@@ -1,7 +1,7 @@
 // Prevents additional console window on Windows in release
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::io::Write;
@@ -160,7 +160,8 @@ fn ensure_parent_dir(path: &Path) -> Result<(), String> {
 struct AppSharedState {
     app_state: Mutex<AppState>,
     clients: Mutex<HashMap<String, Arc<IrcClient>>>,
-    connecting: Mutex<HashSet<String>>,
+    connecting: Mutex<HashMap<String, u64>>,
+    next_conn_id: AtomicU64,
     paths: AppConfigPaths,
     scripts: ScriptStore,
     script_runtime: Mutex<Runtime>,
@@ -168,6 +169,7 @@ struct AppSharedState {
     /// Send budget of the script IRC lines, per network. Never held across an await.
     script_budgets: std::sync::Mutex<HashMap<String, SendBudget>>,
     scripts_dirty: AtomicBool,
+    exiting: AtomicBool,
     logging: std::sync::Mutex<LogSettings>,
     /// logs\connect-debug.log: connect steps, no secrets. On by default.
     debug_log: Arc<DebugLog>,
@@ -377,30 +379,39 @@ fn build_proxy(
     }))
 }
 
-async fn reserve_connection(state: &AppSharedState, network: &str) -> bool {
+async fn reserve_connection(state: &AppSharedState, network: &str) -> Option<u64> {
     let mut connecting = state.connecting.lock().await;
     let clients = state.clients.lock().await;
-    if clients.contains_key(network) || connecting.contains(network) {
-        return false;
+    if clients.contains_key(network) || connecting.contains_key(network) {
+        return None;
     }
-    connecting.insert(network.to_string())
+    let token = state.next_conn_id.fetch_add(1, Ordering::Relaxed);
+    connecting.insert(network.to_string(), token);
+    Some(token)
 }
 
 /// Stores a finished connection. A network closed while it was connecting has lost its
 /// reservation; its client is shut down instead of being stored, and `false` is returned.
-async fn store_connection(state: &AppSharedState, network: String, client: Arc<IrcClient>) -> bool {
+async fn store_connection(state: &AppSharedState, network: String, token: u64, client: Arc<IrcClient>) -> bool {
     let mut connecting = state.connecting.lock().await;
-    if !connecting.remove(&network) {
+    if connecting.get(&network).copied() != Some(token) {
         client.shutdown();
         return false;
     }
+    connecting.remove(&network);
     let mut clients = state.clients.lock().await;
     clients.insert(network, client);
     true
 }
 
-async fn release_connection(state: &AppSharedState, network: &str) {
-    state.connecting.lock().await.remove(network);
+async fn release_connection(state: &AppSharedState, network: &str, token: u64) -> bool {
+    let mut connecting = state.connecting.lock().await;
+    if connecting.get(network).copied() == Some(token) {
+        connecting.remove(network);
+        true
+    } else {
+        false
+    }
 }
 
 async fn remove_connection_if_current(
@@ -486,11 +497,14 @@ async fn connect_network(
         ..config
     };
     let proxy = build_proxy(proxy_kind, proxy_host, proxy_port, proxy_username)?;
-    pin_certificate(&state.paths, &mut config, proxy.as_ref(), proxy_password.as_deref().filter(|p| !p.is_empty())).await?;
-    let (blow_keys, blow_ok) = load_blow_keys(&state.paths.blow_ini);
-    if !reserve_connection(state.inner().as_ref(), &network_id).await {
-        return Err(format!("Network '{}' is already connected or connecting", network_id));
+    if let Err(error) = pin_certificate(&state.paths, &mut config, proxy.as_ref(), proxy_password.as_deref().filter(|p| !p.is_empty())).await {
+        run_lifecycle_event(state.inner().as_ref(), Some(&app_handle), Some(&network_id), "connectfail", error.clone()).await;
+        return Err(error);
     }
+    let (blow_keys, blow_ok) = load_blow_keys(&state.paths.blow_ini);
+    let Some(conn_token) = reserve_connection(state.inner().as_ref(), &network_id).await else {
+        return Err(format!("Network '{}' is already connected or connecting", network_id));
+    };
     let (event_tx, mut event_rx) = mpsc::channel::<IrcEvent>(EVENT_QUEUE);
 
     let mut client = IrcClient::new(config.clone(), event_tx);
@@ -500,13 +514,13 @@ async fn connect_network(
         client.set_fish_key(target, key).await;
     }
     if let Err(error) = client.connect().await {
-        release_connection(state.inner().as_ref(), &network_id).await;
+        release_connection(state.inner().as_ref(), &network_id, conn_token).await;
         run_lifecycle_event(state.inner().as_ref(), Some(&app_handle), Some(&network_id), "connectfail", error.clone()).await;
         return Err(error);
     }
 
     let client_arc = Arc::new(client);
-    if !store_connection(state.inner().as_ref(), network_id.clone(), Arc::clone(&client_arc)).await {
+    if !store_connection(state.inner().as_ref(), network_id.clone(), conn_token, Arc::clone(&client_arc)).await {
         return Err("The connection was closed while it was being set up".to_string());
     }
     if !blow_ok {
@@ -619,13 +633,15 @@ async fn load_connectd(
     let mut pending_servers = Vec::new();
     for server in servers {
         // A disabled server keeps its sidebar entry, shown as offline, but is not connected.
-        if server.enabled && reserve_connection(state.inner().as_ref(), &server.network_id).await {
-            pending_servers.push(server);
+        if server.enabled {
+            if let Some(conn_token) = reserve_connection(state.inner().as_ref(), &server.network_id).await {
+                pending_servers.push((server, conn_token));
+            }
         }
     }
 
     // Launch each new network connection with a small stagger to avoid bouncer flood limits.
-    for (idx, server) in pending_servers.into_iter().enumerate() {
+    for (idx, (server, conn_token)) in pending_servers.into_iter().enumerate() {
         let net_id = server.network_id.clone();
         let config = ConnectConfig {
             allow_self_signed: state.allow_self_signed.load(Ordering::Relaxed),
@@ -644,16 +660,20 @@ async fn load_connectd(
 
             let mut config = config;
             if let Err(e) = pin_certificate(&state_clone.paths, &mut config, proxy_clone.as_ref(), proxy_password_clone.as_deref()).await {
-                release_connection(state_clone.as_ref(), &net_id).await;
+                if !release_connection(state_clone.as_ref(), &net_id, conn_token).await {
+                    return;
+                }
+                let msg = format!("Connection failed: {}", e);
                 let err_ev = IrcEvent::Error {
                     network: net_id.clone(),
-                    message: format!("Connection failed: {}", e),
+                    message: msg.clone(),
                 };
                 {
                     let mut app_st = state_clone.app_state.lock().await;
                     app_st.handle_event(&err_ev);
                 }
                 let _ = app_handle_clone.emit("irc-event", &err_ev);
+                run_lifecycle_event(state_clone.as_ref(), Some(&app_handle_clone), Some(&net_id), "connectfail", msg).await;
                 return;
             }
             let (event_tx, mut event_rx) = mpsc::channel::<IrcEvent>(EVENT_QUEUE);
@@ -670,7 +690,7 @@ async fn load_connectd(
                     let client_arc = Arc::new(client);
                     // false: the network was closed while it connected. store_connection has shut the
                     // client down, and the loop below sees that it is no longer current and ends.
-                    let still_current = store_connection(state_clone.as_ref(), net_id.clone(), Arc::clone(&client_arc)).await;
+                    let still_current = store_connection(state_clone.as_ref(), net_id.clone(), conn_token, Arc::clone(&client_arc)).await;
                     if still_current && !blow_ok {
                         dh1080_status(state_clone.as_ref(), &app_handle_clone, &net_id, "", BLOW_UNREADABLE_NOTICE.to_string()).await;
                     }
@@ -697,16 +717,20 @@ async fn load_connectd(
                     ).await;
                 }
                 Err(e) => {
-                    release_connection(state_clone.as_ref(), &net_id).await;
+                    if !release_connection(state_clone.as_ref(), &net_id, conn_token).await {
+                        return;
+                    }
+                    let msg = format!("Connection failed: {}", e);
                     let err_ev = IrcEvent::Error {
                         network: net_id.clone(),
-                        message: format!("Connection failed: {}", e),
+                        message: msg.clone(),
                     };
                     {
                         let mut app_st = state_clone.app_state.lock().await;
                         app_st.handle_event(&err_ev);
                     }
                     let _ = app_handle_clone.emit("irc-event", &err_ev);
+                    run_lifecycle_event(state_clone.as_ref(), Some(&app_handle_clone), Some(&net_id), "connectfail", msg).await;
                 }
             }
         });
@@ -998,6 +1022,8 @@ fn fish_section(network: Option<&str>, target: &str) -> (String, bool) {
 /// Gives every connection the keys blow.ini holds now, as a connect loads them. A key that was
 /// deleted or changed then stops working in the running session too. An unreadable file changes nothing.
 async fn sync_fish_keys_from_file(state: &AppSharedState, path: &Path) {
+    static FISH_SYNC_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let _sync_guard = FISH_SYNC_LOCK.lock().await;
     let path = path.to_path_buf();
     let (keys, readable) = tokio::task::spawn_blocking(move || load_blow_keys(&path))
         .await
@@ -1624,6 +1650,11 @@ async fn process_event(state: &AppSharedState, app: Option<&tauri::AppHandle>, n
     // point the event loop sees to the end of the login.
     if let IrcEvent::Connected { .. } = event {
         run_lifecycle_event(state, app, Some(network), "logon", String::new()).await;
+    }
+    if let IrcEvent::Error { message, .. } = event {
+        if message.starts_with("Connection failed") {
+            run_lifecycle_event(state, app, Some(network), "connectfail", message.clone()).await;
+        }
     }
     run_script_event(state, app, network, &own_nick, event).await;
     log_incoming(state, &own_nick, event);
@@ -2304,12 +2335,23 @@ fn set_scripts_dirty(dirty: bool, state: State<'_, Arc<AppSharedState>>) {
     state.scripts_dirty.store(dirty, Ordering::SeqCst);
 }
 
+/// Runs `exit` scripts once (bounded so a stuck runtime cannot block exit), then quits the app.
+async fn finish_exit(state: Arc<AppSharedState>, app_handle: tauri::AppHandle) {
+    if state.exiting.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let _ = tokio::time::timeout(
+        Duration::from_secs(2),
+        run_lifecycle_event(&state, Some(&app_handle), None, "exit", String::new()),
+    )
+    .await;
+    app_handle.exit(0);
+}
+
 /// Called by the editor after the user chose to leave with unsaved changes.
 #[tauri::command]
 async fn exit_after_script_prompt(app_handle: tauri::AppHandle, state: State<'_, Arc<AppSharedState>>) -> Result<(), String> {
-    let state = state.inner().clone();
-    run_lifecycle_event(&state, Some(&app_handle), None, "exit", String::new()).await;
-    app_handle.exit(0);
+    finish_exit(state.inner().clone(), app_handle).await;
     Ok(())
 }
 
@@ -2426,21 +2468,27 @@ async fn fetch_rss_feed(
     if !url.starts_with("http://") && !url.starts_with("https://") {
         return Err("Invalid URL protocol, expected http or https".to_string());
     }
-    if let Ok(parsed) = reqwest::Url::parse(&url) {
-        if let Some(host) = parsed.host_str() {
-            let host_owned = host.to_string();
-            let resolves_local =
-                tokio::task::spawn_blocking(move || host_resolves_to_local(&host_owned))
-                    .await
-                    .unwrap_or(false);
-            if resolves_local {
-                return Err("Feed host resolves to a local or private address".to_string());
-            }
-        }
+    let parsed = reqwest::Url::parse(&url).map_err(|e| format!("Invalid URL: {e}"))?;
+    let host = parsed.host_str().ok_or_else(|| "URL has no host".to_string())?;
+    if is_local_host(host) {
+        return Err("Feed host is a local or private address".to_string());
     }
     let proxy = build_proxy(proxy_kind, proxy_host, proxy_port, proxy_username)?;
     let password = proxy_password.filter(|p| !p.is_empty());
-    let client = feed_client(proxy.as_ref(), password.as_deref())?;
+    let pinned = if proxy.is_none() {
+        let port = parsed.port_or_known_default().unwrap_or(80);
+        let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host, port))
+            .await
+            .map_err(|e| format!("Failed to resolve feed host: {e}"))?
+            .collect();
+        if addrs.iter().any(|a| is_local_host(&a.ip().to_string())) {
+            return Err("Feed host resolves to a local or private address".to_string());
+        }
+        Some((host.to_string(), addrs))
+    } else {
+        None
+    };
+    let client = feed_client(proxy.as_ref(), password.as_deref(), pinned.as_ref())?;
     let mut res = client.get(&url).send().await.map_err(|e| e.to_string())?;
     if !res.status().is_success() {
         return Err(format!("HTTP error {}", res.status()));
@@ -2462,27 +2510,32 @@ async fn fetch_rss_feed(
 /// Largest RSS feed that is read, in bytes.
 const RSS_MAX_BYTES: usize = 2 * 1024 * 1024;
 
-/// The HTTP client for a feed read. Without a proxy one client is shared, so connections and the
-/// TLS roots are reused. With an HTTP proxy, a client for that proxy is built per read. SOCKS is
-/// not available to the feed client, so feeds are refused rather than sent around the proxy.
-fn feed_client(proxy: Option<&ProxyConfig>, password: Option<&str>) -> Result<reqwest::Client, String> {
-    static PLAIN: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
-    let Some(cfg) = proxy else {
-        if let Some(client) = PLAIN.get() {
-            return Ok(client.clone());
+/// The HTTP client for a feed read. Without a proxy, resolved public addresses are pinned per
+/// request to prevent DNS-rebinding TOCTOU. With an HTTP proxy, traffic goes through that proxy.
+/// SOCKS is not available to the feed client, so feeds are refused rather than sent around the proxy.
+fn feed_client(
+    proxy: Option<&ProxyConfig>,
+    password: Option<&str>,
+    pinned: Option<&(String, Vec<std::net::SocketAddr>)>,
+) -> Result<reqwest::Client, String> {
+    let mut builder = feed_client_builder();
+    if let Some((host, addrs)) = pinned {
+        if !addrs.is_empty() {
+            builder = builder.resolve_to_addrs(host, addrs);
         }
-        let client = feed_client_builder().build().map_err(|e| e.to_string())?;
-        return Ok(PLAIN.get_or_init(|| client).clone());
-    };
-    if cfg.kind != ProxyKind::HttpConnect {
-        return Err("Feeds cannot use a SOCKS proxy. Use an HTTP proxy, or turn the proxy off.".to_string());
     }
-    let host = if cfg.host.contains(':') { format!("[{}]", cfg.host) } else { cfg.host.clone() };
-    let mut route = reqwest::Proxy::all(format!("http://{host}:{}", cfg.port)).map_err(|e| e.to_string())?;
-    if let (Some(user), Some(pass)) = (cfg.username.as_deref(), password) {
-        route = route.basic_auth(user, pass);
+    if let Some(cfg) = proxy {
+        if cfg.kind != ProxyKind::HttpConnect {
+            return Err("Feeds cannot use a SOCKS proxy. Use an HTTP proxy, or turn the proxy off.".to_string());
+        }
+        let host = if cfg.host.contains(':') { format!("[{}]", cfg.host) } else { cfg.host.clone() };
+        let mut route = reqwest::Proxy::all(format!("http://{host}:{}", cfg.port)).map_err(|e| e.to_string())?;
+        if let (Some(user), Some(pass)) = (cfg.username.as_deref(), password) {
+            route = route.basic_auth(user, pass);
+        }
+        builder = builder.proxy(route);
     }
-    feed_client_builder().proxy(route).build().map_err(|e| e.to_string())
+    builder.build().map_err(|e| e.to_string())
 }
 
 /// Settings shared by every feed client. Redirects are followed at most five times, and never to
@@ -2494,7 +2547,7 @@ fn feed_client_builder() -> reqwest::ClientBuilder {
         .redirect(reqwest::redirect::Policy::custom(|attempt| {
             if attempt.previous().len() >= 5 {
                 attempt.error("too many redirects")
-            } else if attempt.url().host_str().is_some_and(host_resolves_to_local) {
+            } else if attempt.url().host_str().is_some_and(is_local_host) {
                 attempt.error("a redirect to a local or private address was refused")
             } else {
                 attempt.follow()
@@ -2502,29 +2555,7 @@ fn feed_client_builder() -> reqwest::ClientBuilder {
         }))
 }
 
-/// True when `host` is a local/private literal or resolves to one.
-fn host_resolves_to_local(host: &str) -> bool {
-    if is_local_host(host) {
-        return true;
-    }
-    use std::net::ToSocketAddrs;
-    let addr = if host.contains(':') {
-        format!("[{host}]:80")
-    } else {
-        format!("{host}:80")
-    };
-    if let Ok(addrs) = addr.to_socket_addrs() {
-        for a in addrs {
-            if is_local_host(&a.ip().to_string()) {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-/// Loopback, private, link-local and unspecified addresses, and `localhost` names. A name that
-/// resolves to such an address is not caught here; only literal addresses and names are.
+/// Loopback, private, CGNAT, multicast, link-local and unspecified addresses, and `localhost` names.
 fn is_local_host(host: &str) -> bool {
     let host = host.trim_start_matches('[').trim_end_matches(']');
     let lower = host.to_ascii_lowercase();
@@ -2539,14 +2570,16 @@ fn is_local_host(host: &str) -> bool {
                 return true;
             }
             let first = ip.segments()[0];
-            ip.is_loopback() || ip.is_unspecified() || (first & 0xfe00) == 0xfc00 || (first & 0xffc0) == 0xfe80
+            ip.is_loopback() || ip.is_unspecified() || ip.is_multicast() || (first & 0xfe00) == 0xfc00 || (first & 0xffc0) == 0xfe80
         }
         Err(_) => false,
     }
 }
 
 fn local_v4(ip: std::net::Ipv4Addr) -> bool {
-    ip.is_loopback() || ip.is_private() || ip.is_link_local() || ip.is_unspecified() || ip.is_broadcast()
+    let o = ip.octets();
+    let is_cgnat = o[0] == 100 && (o[1] & 0xc0) == 64;
+    ip.is_loopback() || ip.is_private() || ip.is_link_local() || ip.is_unspecified() || ip.is_broadcast() || ip.is_multicast() || is_cgnat
 }
 
 #[cfg(test)]
@@ -2730,13 +2763,15 @@ async fn main() {
             let state = Arc::new(AppSharedState {
                 app_state: Mutex::new(AppState::new()),
                 clients: Mutex::new(HashMap::new()),
-                connecting: Mutex::new(HashSet::new()),
+                connecting: Mutex::new(HashMap::new()),
+                next_conn_id: AtomicU64::new(1),
                 scripts,
                 script_runtime: Mutex::new(runtime),
                 python_runtime,
                 script_budgets: std::sync::Mutex::new(HashMap::new()),
                 paths,
                 scripts_dirty: AtomicBool::new(false),
+                exiting: AtomicBool::new(false),
                 allow_self_signed: AtomicBool::new(true),
                 query_auto_keyx: AtomicBool::new(true),
                 python_autoloaded: AtomicBool::new(false),
@@ -2776,10 +2811,13 @@ async fn main() {
                         api.prevent_close();
                         let _ = window.emit("script-close-requested", ());
                     } else if let Some(state) = window.try_state::<Arc<AppSharedState>>() {
-                        // exit: the scripts run before the window goes away.
+                        // exit: run off the UI thread so scripts cannot deadlock window close.
                         let state = state.inner().clone();
-                        let handle = window.app_handle().clone();
-                        tauri::async_runtime::block_on(run_lifecycle_event(&state, Some(&handle), None, "exit", String::new()));
+                        if !state.exiting.load(Ordering::SeqCst) {
+                            api.prevent_close();
+                            let handle = window.app_handle().clone();
+                            tauri::async_runtime::spawn(finish_exit(state, handle));
+                        }
                     }
                 }
                 WindowEvent::Focused(true) => {
@@ -3123,7 +3161,8 @@ mod tests {
         AppSharedState {
             app_state: Mutex::new(AppState::new()),
             clients: Mutex::new(HashMap::new()),
-            connecting: Mutex::new(HashSet::new()),
+            connecting: Mutex::new(HashMap::new()),
+            next_conn_id: AtomicU64::new(1),
             paths: AppConfigPaths {
                 blow_ini: dir.join("blow.ini"),
                 connectd_mrc: dir.join("connectd.mrc"),
@@ -3135,6 +3174,7 @@ mod tests {
             python_runtime: Mutex::new(PythonRuntime::new(dir.clone(), dir.clone())),
             script_budgets: std::sync::Mutex::new(HashMap::new()),
             scripts_dirty: AtomicBool::new(false),
+            exiting: AtomicBool::new(false),
             allow_self_signed: AtomicBool::new(true),
             query_auto_keyx: AtomicBool::new(true),
             python_autoloaded: AtomicBool::new(false),
@@ -3532,5 +3572,36 @@ quit", &nicks, "").await.is_err());
         assert_eq!(open_query_buffer(&mut st, "net", "charlie"), Some(true));
         assert!(st.networks["net"].buffers.contains_key("charlie"));
         assert_eq!(st.networks["net"].active_buffer, "charlie");
+    }
+
+    #[tokio::test]
+    async fn connectfail_runs_for_connection_failure_errors_only() {
+        let state = test_shared_state();
+        state
+            .script_runtime
+            .lock()
+            .await
+            .load("cf.mrc", "on *:CONNECTFAIL:{ echo cf $1- }\n");
+
+        let cert_notice = IrcEvent::Error {
+            network: "net".into(),
+            message: "Certificate checked (self-signed allowed)".into(),
+        };
+        process_event(&state, None, "net", &cert_notice).await;
+
+        let conn_fail = IrcEvent::Error {
+            network: "net".into(),
+            message: "Connection failed to 127.0.0.1:6667 at tcp connect: refused".into(),
+        };
+        process_event(&state, None, "net", &conn_fail).await;
+
+        let st = state.app_state.lock().await;
+        let msgs: Vec<&str> = st.networks["net"].buffers["status"]
+            .messages
+            .iter()
+            .map(|m| m.text.as_str())
+            .collect();
+        assert!(msgs.iter().any(|t| *t == "cf Connection failed to 127.0.0.1:6667 at tcp connect: refused"), "{msgs:?}");
+        assert!(!msgs.iter().any(|t| t.starts_with("cf Certificate")), "{msgs:?}");
     }
 }

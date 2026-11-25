@@ -164,8 +164,8 @@ pub fn check_row(row: &ServerRow) -> Result<(), String> {
     if !word(&row.username) || row.username.contains('@') {
         return Err("Ident must be one word without @.".to_string());
     }
-    if row.realname.chars().any(char::is_control) {
-        return Err("Real name must not contain control characters (tabs, line breaks).".to_string());
+    if row.realname.is_empty() || row.realname.chars().any(char::is_control) {
+        return Err("Real name must not be empty or contain control characters (tabs, line breaks).".to_string());
     }
     Ok(())
 }

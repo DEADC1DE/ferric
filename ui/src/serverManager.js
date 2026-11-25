@@ -193,7 +193,7 @@ function readFormRow() {
       nick,
       altnick: val("srv-altnick").trim() || `${nick}_`,
       username: val("srv-ident").trim() || nick,
-      realname: val("srv-realname").trim(),
+      realname: val("srv-realname").trim() || nick,
     },
   };
 }
@@ -227,6 +227,10 @@ async function submitForm() {
     return;
   }
   // The typed values stay in the form if the save is refused.
+  const oldRow = form.index !== null ? view.rows[form.index] : null;
+  const oldKey = oldRow ? rowKey(oldRow) : null;
+  const oldEnabled = oldRow ? enabledOf(oldRow) : true;
+  const oldPosition = oldRow ? orderedRows().findIndex((item) => item.index === form.index) : -1;
   form.row = row;
   form.network = network;
   const rows = view.rows.slice();
@@ -235,8 +239,16 @@ async function submitForm() {
   await saveRows(rows, `Saved ${row.host}:${row.port}.`);
   if (view.error) return;
   try {
-    // The saved row is new to the order or keeps its place; its network name is stored with the order.
-    await saveOrder(orderedRows().map((item) => item.row), new Map([[rowKey(row), network]]));
+    // Preserve startup order and enabled flag when host/port/ident changed on an edited row.
+    const ordered = orderedRows().map((item) => item.row);
+    if (oldKey && oldKey !== rowKey(row) && oldPosition >= 0) {
+      const curPos = ordered.indexOf(view.rows[form.index]);
+      if (curPos >= 0 && curPos !== oldPosition) {
+        const [moved] = ordered.splice(curPos, 1);
+        ordered.splice(oldPosition, 0, moved);
+      }
+    }
+    await saveOrder(ordered, new Map([[rowKey(row), network]]), new Map([[rowKey(row), oldEnabled]]));
   } catch (e) {
     view.error = String(e);
     renderServerManager();

@@ -155,7 +155,7 @@ pub(crate) fn call(name: &str, args: &[String], max_bytes: usize) -> Result<Stri
         }
         other if super::math_funcs::is_math(other) => super::math_funcs::call(other, args)?,
         other if super::token_funcs::is_token(other) => super::token_funcs::call(other, args, max_bytes)?,
-        other if super::string_funcs::is_string(other) => super::string_funcs::call(other, args)?,
+        other if super::string_funcs::is_string(other) => super::string_funcs::call(other, args, max_bytes)?,
         "address" => {
             return Err(CallError::Arguments(
                 "$address(nick,type) is not implemented; run stopped".into(),
