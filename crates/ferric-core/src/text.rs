@@ -50,19 +50,9 @@ pub fn ansi_to_irc(text: &str) -> String {
     // Colour numbers for ANSI 30-37 / 40-47 (normal) and 90-97 / 100-107 (bright).
     const NORMAL: [u8; 8] = [1, 5, 3, 7, 2, 6, 10, 15];
     const BRIGHT: [u8; 8] = [14, 4, 9, 8, 12, 13, 11, 0];
-    // Intensity remap of an already active normal foreground colour.
+    // Intensity remap of an already active normal foreground colour: its bright counterpart.
     fn intense(fg: u8) -> u8 {
-        match fg {
-            1 => 14,
-            5 => 4,
-            3 => 9,
-            2 => 12,
-            10 => 11,
-            15 => 0,
-            7 => 8,
-            6 => 13,
-            other => other,
-        }
+        NORMAL.iter().position(|&c| c == fg).map_or(fg, |i| BRIGHT[i])
     }
 
     let mut out = String::with_capacity(text.len());
@@ -92,13 +82,24 @@ pub fn ansi_to_irc(text: &str) -> String {
             continue;
         }
         let mut colour_changed = false;
-        for param in params.split(';') {
+        let parts: Vec<&str> = params.split(';').collect();
+        let mut i = 0;
+        while i < parts.len() {
+            let param = parts[i];
+            i += 1;
             let code: u8 = match param.parse() {
                 Ok(n) => n,
                 Err(_) if param.is_empty() => 0,
                 Err(_) => continue,
             };
             match code {
+                // Extended colours: `5;n` (256 colours) or `2;r;g;b` (truecolour). Their numbers are
+                // skipped, so `38;5;4` is not read as underline. The colour itself is not mapped.
+                38 | 48 => match parts.get(i).copied() {
+                    Some("5") => i += 2,
+                    Some("2") => i += 4,
+                    _ => {}
+                },
                 0 => {
                     out.push('\u{0f}');
                     fg = None;
@@ -223,6 +224,19 @@ mod tests {
         assert_eq!(ansi_to_irc("\u{1b}[31;44mZ"), "\u{3}05,02Z");
         assert_eq!(ansi_to_irc("\u{1b}[41mQ"), "\u{3}99,05Q");
         assert_eq!(ansi_to_irc("\u{1b}[39mD"), "D"); // 39 and 49 change nothing
+    }
+
+    #[test]
+    fn ansi_extended_colours_are_skipped_not_read_as_styles() {
+        assert_eq!(ansi_to_irc("\u{1b}[38;5;4mX"), "X");
+        assert_eq!(ansi_to_irc("\u{1b}[38;5;1mX"), "X");
+        assert_eq!(ansi_to_irc("\u{1b}[38;2;0;1;0mX"), "X");
+        assert_eq!(ansi_to_irc("\u{1b}[48;5;4m\u{1b}[31mX"), "\u{3}05X");
+    }
+
+    #[test]
+    fn ansi_reset_and_colour_in_one_sequence() {
+        assert_eq!(ansi_to_irc("\u{1b}[0;93mX"), "\u{f}\u{3}08X");
     }
 
     #[test]

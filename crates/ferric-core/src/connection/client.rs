@@ -276,8 +276,8 @@ pub struct ConnectConfig {
 }
 
 /// Looks up a FiSH key by "network:target", trying the UI/config network id first
-/// (what the key manager saves under), then the server-advertised NETWORK name
-///, then the bare target.
+/// (what the key manager saves under), then the server-advertised NETWORK name,
+/// then the bare target.
 fn find_fish_key<'a>(
     keys: &'a std::collections::HashMap<String, String>,
     config_network: &str,
@@ -831,8 +831,7 @@ fn truncate_utf16(text: &str, max: usize) -> &str {
 }
 
 /// The segments of a message: CRLF, a lone CR or LF, and U+FFFF end a segment, and the spaces after a
-/// separator are skipped. An empty segment before a separator is kept; a trailing separator adds none
-///.
+/// separator are skipped. An empty segment before a separator is kept; a trailing separator adds none.
 fn segments_of(text: &str) -> Vec<&str> {
     let mut out = Vec::new();
     let mut rest = text;

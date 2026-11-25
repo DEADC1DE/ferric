@@ -20,8 +20,7 @@ pub(crate) fn clean_line(s: String) -> String {
     }
 }
 
-/// Splits evaluated text into parameters at U+0020, skipping empty pieces
-///.
+/// Splits evaluated text into parameters at U+0020, skipping empty pieces.
 pub(crate) fn split_args(text: &str) -> Vec<String> {
     text.split(' ')
         .filter(|w| !w.is_empty())
