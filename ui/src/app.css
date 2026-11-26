@@ -681,6 +681,7 @@ summary:focus-visible,
   flex: 1 1 auto;
   overflow: hidden;
   margin-left: 2px;
+  padding-right: 0.25em;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -785,13 +786,14 @@ summary:focus-visible,
 .chan-label {
   display: inline-flex;
   min-width: 0;
-  height: 16px;
+  min-height: 16px;
   align-items: center;
   padding: 0 3px;
   overflow: hidden;
 }
 
 .chan-name {
+  padding-right: 0.25em;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1022,6 +1024,7 @@ summary:focus-visible,
   padding: 0 0 0 2px;
   overflow-wrap: anywhere;
   color: var(--col-normal, var(--text));
+  contain: layout style;
 }
 
 .msg-time {
@@ -4143,18 +4146,18 @@ input[type="checkbox"] {
   --menu-open: rgba(255, 255, 255, 0.1);
   --sel-bg: rgba(76, 194, 255, 0.16);
   --sel-fg: #ffffff;
-  --menu-bg: rgba(34, 38, 46, 0.9);
+  --menu-bg: #23272f;
   --dialog: #21252c;
   --dialog-title: #1b1e24;
   --ctl-bg: rgba(255, 255, 255, 0.06);
   --ctl-border: rgba(255, 255, 255, 0.14);
   --ctl-hover: rgba(255, 255, 255, 0.11);
   --ctl-primary-border: rgba(76, 194, 255, 0.55);
-  --scrim: rgba(8, 10, 14, 0.62);
+  --scrim: rgba(8, 10, 14, 0.55);
   --edge-light: rgba(255, 255, 255, 0.07);
   --edge-shadow: rgba(0, 0, 0, 0.35);
-  --fluent-shadow-lg: 0 18px 44px rgba(0, 0, 0, 0.5), 0 2px 10px rgba(0, 0, 0, 0.3);
-  --fluent-shadow-sm: 0 8px 24px rgba(0, 0, 0, 0.4), 0 1px 4px rgba(0, 0, 0, 0.25);
+  --fluent-shadow-lg: 0 10px 24px rgba(0, 0, 0, 0.42);
+  --fluent-shadow-sm: 0 4px 12px rgba(0, 0, 0, 0.32);
 }
 
 :root[data-style="fluent"][data-theme="light"] {
@@ -4177,23 +4180,22 @@ input[type="checkbox"] {
   --menu-open: rgba(15, 23, 42, 0.09);
   --sel-bg: rgba(0, 103, 192, 0.12);
   --sel-fg: #0f172a;
-  --menu-bg: rgba(252, 253, 255, 0.92);
+  --menu-bg: #fcfdff;
   --dialog: #f7f8fa;
   --dialog-title: #eef1f5;
   --ctl-bg: #ffffff;
   --ctl-border: rgba(15, 23, 42, 0.15);
   --ctl-hover: #f1f5f9;
   --ctl-primary-border: #005a9e;
-  --scrim: rgba(15, 23, 42, 0.32);
+  --scrim: rgba(15, 23, 42, 0.28);
   --edge-light: rgba(255, 255, 255, 0.8);
   --edge-shadow: rgba(15, 23, 42, 0.08);
-  --fluent-shadow-lg: 0 18px 44px rgba(15, 23, 42, 0.18), 0 2px 10px rgba(15, 23, 42, 0.08);
-  --fluent-shadow-sm: 0 8px 24px rgba(15, 23, 42, 0.14), 0 1px 4px rgba(15, 23, 42, 0.06);
+  --fluent-shadow-lg: 0 10px 24px rgba(15, 23, 42, 0.14);
+  --fluent-shadow-sm: 0 4px 12px rgba(15, 23, 42, 0.1);
 }
 
 :root[data-style="fluent"] body {
   -webkit-font-smoothing: antialiased;
-  text-rendering: optimizeLegibility;
 }
 
 :root[data-style="fluent"] .app-menu-bar {
@@ -4205,7 +4207,6 @@ input[type="checkbox"] {
 :root[data-style="fluent"] .menu-dropdown > summary {
   border-radius: var(--fluent-radius-sm);
   padding: 4px 9px;
-  transition: background-color 120ms var(--fluent-ease), color 120ms var(--fluent-ease);
 }
 
 :root[data-style="fluent"] .menu-popover,
@@ -4215,14 +4216,11 @@ input[type="checkbox"] {
   border: 1px solid var(--line-dark);
   padding: 4px;
   box-shadow: var(--fluent-shadow-sm);
-  backdrop-filter: blur(18px) saturate(1.2);
-  -webkit-backdrop-filter: blur(18px) saturate(1.2);
 }
 
 :root[data-style="fluent"] .menu-popover button,
 :root[data-style="fluent"] .context-menu-item {
   border-radius: 4px;
-  transition: background-color 100ms var(--fluent-ease);
 }
 
 :root[data-style="fluent"] .app-toolbar {
@@ -4234,7 +4232,6 @@ input[type="checkbox"] {
 :root[data-style="fluent"] .toolbar-button {
   border-radius: var(--fluent-radius-sm);
   border: 1px solid transparent;
-  transition: background-color 120ms var(--fluent-ease), border-color 120ms var(--fluent-ease);
 }
 
 :root[data-style="fluent"] .toolbar-button:hover:not(:disabled) {
@@ -4268,7 +4265,6 @@ input[type="checkbox"] {
   position: relative;
   margin: 1px 6px;
   border-radius: var(--fluent-radius-sm);
-  transition: background-color 120ms var(--fluent-ease), color 120ms var(--fluent-ease);
 }
 
 :root[data-style="fluent"] .network-header.is-current .network-name {
@@ -4309,7 +4305,6 @@ input[type="checkbox"] {
 :root[data-style="fluent"] .switchbar-tab {
   border-radius: var(--fluent-radius-sm);
   border: 1px solid transparent;
-  transition: background-color 120ms var(--fluent-ease), border-color 120ms var(--fluent-ease);
 }
 
 :root[data-style="fluent"] .switchbar-tab.active {
@@ -4324,17 +4319,11 @@ input[type="checkbox"] {
   border-radius: 6px;
   background: var(--field);
   box-shadow: inset 0 -1px 0 var(--line-dark);
-  transition: border-color 120ms var(--fluent-ease), box-shadow 120ms var(--fluent-ease);
 }
 
 :root[data-style="fluent"] .input-area:focus-within {
   border-color: var(--focus);
   box-shadow: inset 0 -2px 0 var(--focus);
-}
-
-:root[data-style="fluent"] .modal-overlay {
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
 }
 
 :root[data-style="fluent"] .modal-card,
@@ -4352,7 +4341,6 @@ input[type="checkbox"] {
 :root[data-style="fluent"] .btn,
 :root[data-style="fluent"] .btn-icon-sm {
   border-radius: var(--fluent-radius-sm);
-  transition: background-color 120ms var(--fluent-ease), border-color 120ms var(--fluent-ease), transform 80ms var(--fluent-ease);
 }
 
 :root[data-style="fluent"] .btn:active:not(:disabled) {
@@ -4374,7 +4362,6 @@ input[type="checkbox"] {
 :root[data-style="fluent"] textarea:not(.chat-input) {
   border-radius: var(--fluent-radius-sm);
   border-color: var(--ctl-border);
-  transition: border-color 120ms var(--fluent-ease), box-shadow 120ms var(--fluent-ease);
 }
 
 :root[data-style="fluent"] .form-input:focus,

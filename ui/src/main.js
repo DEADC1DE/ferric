@@ -4417,6 +4417,9 @@ const DEFAULT_APP_OPTIONS = {
   floodQueueOp: false,
   floodQueueOwn: false,
 
+  // Display > General
+  minimizeToTray: false,
+
   // Display > RSS Feeds
   rssEnabled: true,
   rssUrls: "https://wid.cert-bund.de/content/public/securityAdvisory/rss\nhttps://www.heise.de/security/Alerts/feed.xml",
@@ -4534,6 +4537,7 @@ function saveAppOptions(opts) {
   void applySelfSignedSetting();
   void applyPythonSettings();
   void applyQueryAutoKeyxSetting();
+  void applyMinimizeToTraySetting();
   rowHtmlCache.clear();
   render();
   if (typeof rssManager !== "undefined") {
@@ -4561,6 +4565,15 @@ async function applyQueryAutoKeyxSetting() {
     await invoke("set_query_auto_keyx", { value: appOptions.queryAutoKeyx !== false });
   } catch (err) {
     console.warn("set_query_auto_keyx failed:", err);
+  }
+}
+
+async function applyMinimizeToTraySetting() {
+  if (!isTauri) return;
+  try {
+    await invoke("set_minimize_to_tray", { value: !!appOptions.minimizeToTray });
+  } catch (err) {
+    console.warn("set_minimize_to_tray failed:", err);
   }
 }
 
@@ -5371,6 +5384,7 @@ function renderOptionsPage() {
         <label class="options-toggle"><input id="options-dark-mode" type="checkbox" ${activeTheme === "dark" ? "checked" : ""} ${followSystemTheme ? "disabled" : ""} /> Dark mode</label>
         <label class="options-toggle"><input id="options-show-nicklist" type="checkbox" ${state.showNicklist ? "checked" : ""} /> Show nick list</label>
         <label class="options-toggle"><input id="options-show-switchbar" type="checkbox" ${state.showSwitchbar ? "checked" : ""} /> Show switchbar</label>
+        <label class="options-toggle"><input type="checkbox" data-opt="minimizeToTray" ${p.minimizeToTray ? "checked" : ""} /> Minimize to system tray</label>
       </fieldset>`;
   }
   if (state.optionsPage === "display-colors") {
@@ -6377,14 +6391,15 @@ async function initTauri() {
       await applySelfSignedSetting();
       await applyPythonSettings();
       await applyQueryAutoKeyxSetting();
+      await applyMinimizeToTraySetting();
 
-      // Periodically sync backend state (500ms) without replacing input or disrupting scroll
+      // Periodically sync backend state (1500ms) without replacing input or disrupting scroll
       // Started once. A tick is skipped while a sync is still running (it would only queue
       // another full copy of the state) and while the window is hidden; irc-event syncs still run.
       if (!syncTimer) {
         syncTimer = setInterval(() => {
           if (!syncRunning && !document.hidden) void syncFromBackend();
-        }, 500);
+        }, 1500);
       }
       try {
         await listen("irc-event", (event) => {

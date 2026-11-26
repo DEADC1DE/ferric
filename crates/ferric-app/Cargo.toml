@@ -10,7 +10,7 @@ ferric-core = { path = "../ferric-core" }
 tokio = { version = "1.43", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-tauri = { version = "2.2", features = [] }
+tauri = { version = "2.2", features = ["tray-icon"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 
 [build-dependencies]

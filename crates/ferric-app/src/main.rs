@@ -185,6 +185,8 @@ struct AppSharedState {
     allow_self_signed: AtomicBool,
     /// The Options setting "DH1080 key exchange on open". Starts on, which is the Options default.
     query_auto_keyx: AtomicBool,
+    /// The Options setting "Minimize to system tray".
+    minimize_to_tray: AtomicBool,
     python_autoloaded: AtomicBool,
     pub perf: Arc<PerfTelemetry>,
 }
@@ -853,6 +855,85 @@ fn set_allow_self_signed(value: bool, state: State<'_, Arc<AppSharedState>>) {
 #[tauri::command]
 fn set_query_auto_keyx(value: bool, state: State<'_, Arc<AppSharedState>>) {
     state.query_auto_keyx.store(value, Ordering::Relaxed);
+}
+
+fn restore_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.set_skip_taskbar(false);
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+#[tauri::command]
+fn set_minimize_to_tray(
+    app: tauri::AppHandle,
+    value: bool,
+    state: State<'_, Arc<AppSharedState>>,
+) -> Result<(), String> {
+    use tauri::menu::{MenuBuilder, MenuItemBuilder};
+    use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+
+    state.minimize_to_tray.store(value, Ordering::Relaxed);
+    if value {
+        if app.tray_by_id("main").is_some() {
+            return Ok(());
+        }
+        let show_item = MenuItemBuilder::with_id("show", "Show Ferric")
+            .build(&app)
+            .map_err(|e| e.to_string())?;
+        let quit_item = MenuItemBuilder::with_id("quit", "Quit")
+            .build(&app)
+            .map_err(|e| e.to_string())?;
+        let menu = MenuBuilder::new(&app)
+            .items(&[&show_item, &quit_item])
+            .build()
+            .map_err(|e| e.to_string())?;
+
+        let mut builder = TrayIconBuilder::with_id("main")
+            .tooltip("Ferric")
+            .menu(&menu)
+            .show_menu_on_left_click(false)
+            .on_menu_event(|app, event| match event.id().as_ref() {
+                "show" => restore_main_window(app),
+                "quit" => {
+                    if let Some(state) = app.try_state::<Arc<AppSharedState>>() {
+                        if state.scripts_dirty.load(Ordering::SeqCst) {
+                            restore_main_window(app);
+                            if let Some(window) = app.get_webview_window("main") {
+                                let _ = window.emit("script-close-requested", ());
+                            }
+                        } else if !state.exiting.load(Ordering::SeqCst) {
+                            let state = state.inner().clone();
+                            let handle = app.clone();
+                            tauri::async_runtime::spawn(finish_exit(state, handle));
+                        }
+                    } else {
+                        app.exit(0);
+                    }
+                }
+                _ => {}
+            })
+            .on_tray_icon_event(|tray, event| {
+                if let TrayIconEvent::Click {
+                    button: MouseButton::Left,
+                    button_state: MouseButtonState::Up,
+                    ..
+                } = event
+                {
+                    restore_main_window(tray.app_handle());
+                }
+            });
+        if let Some(icon) = app.default_window_icon() {
+            builder = builder.icon(icon.clone());
+        }
+        builder.build(&app).map_err(|e| e.to_string())?;
+    } else {
+        restore_main_window(&app);
+        let _ = app.remove_tray_by_id("main");
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -2774,6 +2855,7 @@ async fn main() {
                 exiting: AtomicBool::new(false),
                 allow_self_signed: AtomicBool::new(true),
                 query_auto_keyx: AtomicBool::new(true),
+                minimize_to_tray: AtomicBool::new(false),
                 python_autoloaded: AtomicBool::new(false),
                 debug_log: Arc::new(DebugLog::new(log_dir.clone())),
                 logging: std::sync::Mutex::new(LogSettings {
@@ -2831,6 +2913,16 @@ async fn main() {
                         });
                     }
                 }
+                WindowEvent::Resized(_) => {
+                    if let Some(state) = window.try_state::<Arc<AppSharedState>>() {
+                        if state.minimize_to_tray.load(Ordering::Relaxed)
+                            && window.is_minimized().unwrap_or(false)
+                        {
+                            let _ = window.set_skip_taskbar(true);
+                            let _ = window.hide();
+                        }
+                    }
+                }
                 _ => {}
             }
         })
@@ -2844,6 +2936,7 @@ async fn main() {
             tls_fingerprint,
             set_allow_self_signed,
             set_query_auto_keyx,
+            set_minimize_to_tray,
             set_python_settings,
             get_fish_keys,
             get_buffer_fish_key,
@@ -3177,6 +3270,7 @@ mod tests {
             exiting: AtomicBool::new(false),
             allow_self_signed: AtomicBool::new(true),
             query_auto_keyx: AtomicBool::new(true),
+            minimize_to_tray: AtomicBool::new(false),
             python_autoloaded: AtomicBool::new(false),
             logging: std::sync::Mutex::new(LogSettings {
                 enabled: false,
