@@ -1,4 +1,4 @@
-import { renderSpansToHtml, parseIrcToHtml, escapeHtml, IRC_COLORS } from "./utils/ircColors.js";
+import { renderSpansToHtml, parseIrcToHtml, sliceRawIrcText, sliceSpansToRawIrc, escapeHtml, IRC_COLORS } from "./utils/ircColors.js";
 import { createScriptEditor } from "./scriptEditor.js";
 import { fetchScriptMenuNodes, renderScriptMenuNodes, bindScriptMenuItems, runScriptMenuNode } from "./scriptMenus.js";
 import { icons } from "./icons.js";
@@ -713,15 +713,24 @@ function mountAppShell() {
   document.querySelector(".topic-bar")?.addEventListener("dblclick", openChannelCentralForActive);
   // The empty part of the chat (the log itself, not a message row) does the same.
   // A click in the chat puts the cursor in the message box, unless the click ends a text selection.
-  document.getElementById("messages-log")?.addEventListener("click", () => {
+  const messagesLog = document.getElementById("messages-log");
+  messagesLog?.addEventListener("mouseup", (e) => {
+    if (e.button !== 0) return;
+    const text = extractChatSelectionText(messagesLog, e.ctrlKey || e.metaKey);
+    if (text) {
+      void navigator.clipboard?.writeText(text).catch(() => {});
+      window.getSelection()?.removeAllRanges();
+    }
+  });
+  messagesLog?.addEventListener("click", () => {
     const input = document.getElementById("chat-input");
     if (!input || input.disabled || window.getSelection()?.toString()) return;
     input.focus({ preventScroll: true });
   });
-  document.getElementById("messages-log")?.addEventListener("dblclick", (e) => {
+  messagesLog?.addEventListener("dblclick", (e) => {
     if (e.target === e.currentTarget) openChannelCentralForActive();
   });
-  document.getElementById("messages-log")?.addEventListener(
+  messagesLog?.addEventListener(
     "scroll",
     () => prependOlderMessagesIfNeeded(),
     { passive: true }
@@ -2268,6 +2277,91 @@ function prependOlderMessagesIfNeeded() {
   log.insertAdjacentHTML("afterbegin", renderMessageRows(slice));
   log.scrollTop = oldTop + (log.scrollHeight - oldHeight);
   prev.startIndex = nextStart;
+}
+
+function selectedRangeTextIn(container, selRange) {
+  const r = document.createRange();
+  r.selectNodeContents(container);
+  if (selRange.compareBoundaryPoints(Range.START_TO_START, r) > 0) {
+    r.setStart(selRange.startContainer, selRange.startOffset);
+  }
+  if (selRange.compareBoundaryPoints(Range.END_TO_END, r) < 0) {
+    r.setEnd(selRange.endContainer, selRange.endOffset);
+  }
+  return r.toString();
+}
+
+function selectedOffsetsIn(container, selRange) {
+  let start = null;
+  let end = 0;
+  let offset = 0;
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+  let node;
+  while ((node = walker.nextNode())) {
+    const len = node.nodeValue.length;
+    if (selRange.intersectsNode(node)) {
+      const nodeStart = node === selRange.startContainer ? selRange.startOffset : 0;
+      const nodeEnd = node === selRange.endContainer ? selRange.endOffset : len;
+      if (start === null) start = offset + nodeStart;
+      end = offset + nodeEnd;
+    }
+    offset += len;
+  }
+  return start === null ? null : { start, end };
+}
+
+function extractChatSelectionText(logEl, includeFormatting) {
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed || sel.rangeCount === 0) return "";
+  if (!logEl.contains(sel.anchorNode) && !logEl.contains(sel.focusNode)) return "";
+  if (!includeFormatting) return sel.toString();
+
+  const range = sel.getRangeAt(0);
+  const net = state.networks[state.active_network];
+  const activeBuf = net ? net.buffers[net.active_buffer] : null;
+  const msgById = new Map();
+  if (activeBuf?.messages) {
+    for (const m of activeBuf.messages) {
+      if (m.id !== undefined && m.id !== null) msgById.set(String(m.id), m);
+    }
+  }
+
+  const lines = [];
+  for (const row of logEl.querySelectorAll(".msg-row")) {
+    if (!range.intersectsNode(row)) continue;
+    const contentEl = row.querySelector(".msg-content");
+    if (!contentEl) {
+      const plain = selectedRangeTextIn(row, range);
+      if (plain) lines.push(plain);
+      continue;
+    }
+
+    // Plain prefix (timestamp, sender) before .msg-content
+    const prefixRange = document.createRange();
+    prefixRange.setStart(row, 0);
+    prefixRange.setEndBefore(contentEl);
+    if (range.compareBoundaryPoints(Range.START_TO_START, prefixRange) > 0) {
+      prefixRange.setStart(range.startContainer, range.startOffset);
+    }
+    const prefixText = prefixRange.compareBoundaryPoints(Range.START_TO_END, prefixRange) < 0
+      ? prefixRange.toString()
+      : "";
+
+    let contentText = "";
+    const offsets = selectedOffsetsIn(contentEl, range);
+    if (offsets && offsets.end > offsets.start) {
+      const msg = msgById.get(row.dataset.msgId || "");
+      if (msg && msg.spans && msg.spans.length > 0) {
+        contentText = sliceSpansToRawIrc(msg.spans, offsets.start, offsets.end);
+      } else if (msg && typeof msg.text === "string" && !row.classList.contains("kind-join") && !row.classList.contains("kind-quit")) {
+        contentText = sliceRawIrcText(msg.text, offsets.start, offsets.end);
+      } else {
+        contentText = selectedRangeTextIn(contentEl, range);
+      }
+    }
+    lines.push(prefixText + contentText);
+  }
+  return lines.length > 0 ? lines.join("\n") : sel.toString();
 }
 
 // Returns true when the caller should scroll the log to the bottom (after all other writes).

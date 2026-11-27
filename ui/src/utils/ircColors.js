@@ -208,6 +208,179 @@ export function parseIrcToHtml(raw) {
   return out;
 }
 
+function hasActiveFormatting(fmt) {
+  return (
+    fmt.fg !== null && fmt.fg !== undefined ||
+    fmt.bg !== null && fmt.bg !== undefined ||
+    fmt.bold ||
+    fmt.italic ||
+    fmt.underline ||
+    fmt.strikethrough ||
+    fmt.reverse
+  );
+}
+
+function formatIrcPrefix(fmt) {
+  let out = "";
+  if (fmt.bold) out += "\x02";
+  if (fmt.italic) out += "\x1D";
+  if (fmt.underline) out += "\x1F";
+  if (fmt.strikethrough) out += "\x1E";
+  if (fmt.reverse) out += "\x16";
+  if (fmt.fg !== null && fmt.fg !== undefined) {
+    out += `\x03${String(fmt.fg).padStart(2, "0")}`;
+    if (fmt.bg !== null && fmt.bg !== undefined) {
+      out += `,${String(fmt.bg).padStart(2, "0")}`;
+    }
+  } else if (fmt.bg !== null && fmt.bg !== undefined) {
+    out += `\x03,${String(fmt.bg).padStart(2, "0")}`;
+  }
+  return out;
+}
+
+export function sliceRawIrcText(raw, visStart, visEnd) {
+  if (!raw || visEnd <= visStart) return "";
+
+  const fmt = {
+    fg: null,
+    bg: null,
+    bold: false,
+    italic: false,
+    underline: false,
+    strikethrough: false,
+    reverse: false,
+  };
+  let out = "";
+  let started = false;
+  let visIdx = 0;
+  let i = 0;
+  const len = raw.length;
+
+  while (i < len && visIdx < visEnd) {
+    const ch = raw[i];
+
+    if (ch === "\x03") {
+      const codeStart = i;
+      i++;
+      let fgStr = "";
+      while (i < len && raw[i] >= "0" && raw[i] <= "9" && fgStr.length < 2) {
+        fgStr += raw[i];
+        i++;
+      }
+      if (fgStr.length > 0) {
+        fmt.fg = parseInt(fgStr, 10);
+        if (i < len && raw[i] === "," && i + 1 < len && raw[i + 1] >= "0" && raw[i + 1] <= "9") {
+          i++;
+          let bgStr = "";
+          while (i < len && raw[i] >= "0" && raw[i] <= "9" && bgStr.length < 2) {
+            bgStr += raw[i];
+            i++;
+          }
+          if (bgStr.length > 0) fmt.bg = parseInt(bgStr, 10);
+        }
+      } else {
+        fmt.fg = null;
+        fmt.bg = null;
+      }
+      if (started) out += raw.slice(codeStart, i);
+      continue;
+    }
+
+    if (ch === "\x02" || ch === "\x1D" || ch === "\x1F" || ch === "\x1E" || ch === "\x16" || ch === "\x0F") {
+      if (ch === "\x02") fmt.bold = !fmt.bold;
+      else if (ch === "\x1D") fmt.italic = !fmt.italic;
+      else if (ch === "\x1F") fmt.underline = !fmt.underline;
+      else if (ch === "\x1E") fmt.strikethrough = !fmt.strikethrough;
+      else if (ch === "\x16") fmt.reverse = !fmt.reverse;
+      else {
+        fmt.fg = null;
+        fmt.bg = null;
+        fmt.bold = false;
+        fmt.italic = false;
+        fmt.underline = false;
+        fmt.strikethrough = false;
+        fmt.reverse = false;
+      }
+      if (started) out += ch;
+      i++;
+      continue;
+    }
+
+    if (visIdx >= visStart) {
+      if (!started) {
+        started = true;
+        out += formatIrcPrefix(fmt);
+      }
+      out += ch;
+    }
+    visIdx++;
+    i++;
+  }
+
+  if (started && hasActiveFormatting(fmt) && !out.endsWith("\x0F")) {
+    out += "\x0F";
+  }
+  return out;
+}
+
+export function sliceSpansToRawIrc(spans, visStart, visEnd) {
+  if (!spans || spans.length === 0 || visEnd <= visStart) return "";
+
+  let out = "";
+  let visIdx = 0;
+  let active = {
+    fg: null,
+    bg: null,
+    bold: false,
+    italic: false,
+    underline: false,
+    strikethrough: false,
+    reverse: false,
+  };
+
+  for (const span of spans) {
+    const text = span.text || "";
+    const spanStart = visIdx;
+    const spanEnd = spanStart + text.length;
+    visIdx = spanEnd;
+    if (spanEnd <= visStart || spanStart >= visEnd) continue;
+
+    const sliceFrom = Math.max(0, visStart - spanStart);
+    const sliceTo = Math.min(text.length, visEnd - spanStart);
+    const piece = text.slice(sliceFrom, sliceTo);
+    if (!piece) continue;
+
+    const next = {
+      fg: span.fg ?? null,
+      bg: span.bg ?? null,
+      bold: Boolean(span.bold),
+      italic: Boolean(span.italic),
+      underline: Boolean(span.underline),
+      strikethrough: Boolean(span.strikethrough),
+      reverse: Boolean(span.reverse),
+    };
+
+    const same =
+      active.fg === next.fg &&
+      active.bg === next.bg &&
+      active.bold === next.bold &&
+      active.italic === next.italic &&
+      active.underline === next.underline &&
+      active.strikethrough === next.strikethrough &&
+      active.reverse === next.reverse;
+
+    if (!same) {
+      if (hasActiveFormatting(active)) out += "\x0F";
+      out += formatIrcPrefix(next);
+      active = next;
+    }
+    out += piece;
+  }
+
+  if (hasActiveFormatting(active)) out += "\x0F";
+  return out;
+}
+
 export function escapeHtml(str) {
   return str
     .replace(/&/g, "&amp;")
